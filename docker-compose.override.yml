@@ -7,6 +7,12 @@
 services:
   supportbot:
     container_name: support-bot
+    # Апстримный CMD - `npm run prod`, а это `tsc && node build/index.js`.
+    # В production-стадии Dockerfile нет ни src/, ни tsconfig.json, поэтому tsc
+    # падает в справку и контейнер уходит в рестарт-луп. Код уже собран на
+    # builder-стадии - просто запускаем его.
+    working_dir: /bot
+    command: ["node", "/bot/build/index.js"]
     ports: !reset []
     logging:
       driver: json-file
