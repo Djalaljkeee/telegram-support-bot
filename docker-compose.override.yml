@@ -1,0 +1,35 @@
+# Локальный оверлей развёртывания (в апстрим не уходит, конфликтов при git pull не будет).
+# Отличия от апстримного docker-compose.yml:
+#  - signal-cli и mongo-express убраны в профили, обычным `up -d` не поднимаются;
+#  - mongo не торчит наружу (только 127.0.0.1), порт 8080 бота не публикуется —
+#    web_server в конфиге выключен;
+#  - осмысленные имена контейнеров и ограничение логов.
+services:
+  supportbot:
+    container_name: support-bot
+    ports: !reset []
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  mongodb:
+    container_name: support-bot-mongo
+    ports: !override
+      - "127.0.0.1:27017:27017"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # поднимается только явно: docker compose --profile signal up -d signal-cli
+  signal-cli:
+    profiles: ["signal"]
+
+  # поднимается только явно: docker compose --profile debug up -d mongo-express
+  mongo-express:
+    profiles: ["debug"]
+    ports: !override
+      - "127.0.0.1:8081:8081"
