@@ -125,6 +125,21 @@ export class Config {
   llm_base_url: string;
   llm_model: string;
   llm_knowledge: string;
+  /** Open one forum topic per ticket in the staff supergroup. */
+  staff_forum_topics: boolean = false;
+  /** DJVPN-specific customer lookup (SHM billing + Remnawave panel). */
+  djvpn: DjvpnConfig = new DjvpnConfig();
+}
+
+export class DjvpnConfig {
+  enabled: boolean = false;
+  /** SHM admin API base url, e.g. https://admin.djvpn.ru */
+  shm_url: string = '';
+  shm_login: string = '';
+  shm_password: string = '';
+  /** Remnawave panel base url, e.g. https://remna.djvpn.ru */
+  panel_url: string = '';
+  panel_token: string = '';
 }
 
 export interface Cache {

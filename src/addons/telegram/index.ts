@@ -15,6 +15,9 @@ class TelegramAddon implements Addon {
   public botInfo: any = {};
 
   private static instance: TelegramAddon | null = null;
+  /** Chats where topic creation just failed, and when to try them again. */
+  private static forumUnavailableUntil: Record<string, number> = {};
+  private static readonly FORUM_RETRY_MS = 10 * 60 * 1000;
 
   private constructor(token: string) {
     this.bot = new Bot<BotContext>(token);
@@ -68,6 +71,63 @@ class TelegramAddon implements Addon {
     if (typeof chatId !== 'string' && typeof chatId !== 'number') return;
     const response = await this.bot.api.sendMessage(chatId.toString(), text, options);
     return response.message_id.toString();
+  }
+
+  /**
+   * Opens a forum topic in a supergroup and returns its message_thread_id.
+   * Returns null when the chat is not a forum or the bot lacks the right, so
+   * callers can fall back to posting into the chat itself.
+   *
+   * @param chatId - Target supergroup.
+   * @param name - Topic name (Telegram truncates at 128 chars).
+   */
+  async createForumTopic(chatId: string | number, name: string): Promise<number | null> {
+    // Topics can be switched off in the group at any time. Without this backoff
+    // every single ticket would retry and log a failure.
+    const until = TelegramAddon.forumUnavailableUntil[chatId.toString()];
+    if (until && Date.now() < until) return null;
+
+    try {
+      const topic = await this.bot.api.createForumTopic(chatId.toString(), name.slice(0, 128));
+      delete TelegramAddon.forumUnavailableUntil[chatId.toString()];
+      return topic.message_thread_id;
+    } catch (e) {
+      TelegramAddon.forumUnavailableUntil[chatId.toString()] =
+        Date.now() + TelegramAddon.FORUM_RETRY_MS;
+      log.error('Could not create forum topic: ', e);
+      return null;
+    }
+  }
+
+  /**
+   * Closes a forum topic. Best-effort: a missing or already closed topic is not
+   * worth failing a ticket over.
+   *
+   * @param chatId - Target supergroup.
+   * @param threadId - Topic to close.
+   */
+  async closeForumTopic(chatId: string | number, threadId: number): Promise<void> {
+    try {
+      await this.bot.api.closeForumTopic(chatId.toString(), threadId);
+    } catch (e) {
+      log.error('Could not close forum topic: ', e);
+    }
+  }
+
+  /**
+   * Reopens a forum topic that was closed when its ticket was answered, so a
+   * returning user's message does not hit TOPIC_CLOSED. Errors are ignored:
+   * an already open topic is exactly the state we want.
+   *
+   * @param chatId - Target supergroup.
+   * @param threadId - Topic to reopen.
+   */
+  async reopenForumTopic(chatId: string | number, threadId: number): Promise<void> {
+    try {
+      await this.bot.api.reopenForumTopic(chatId.toString(), threadId);
+    } catch (e) {
+      // Already open, or the topic is gone - nothing to do either way.
+    }
   }
 
   sendDocument = (

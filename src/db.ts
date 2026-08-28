@@ -15,6 +15,8 @@ export interface ISupportee extends mongoose.Document {
   messenger: Messenger;
   status: string;
   category: string | null;
+  /** Forum topic (message_thread_id) opened for this ticket in the staff chat. */
+  threadId: number | null;
 }
 
 export const SupporteeSchema = new mongoose.Schema<ISupportee>({
@@ -25,6 +27,7 @@ export const SupporteeSchema = new mongoose.Schema<ISupportee>({
   messenger: { type: String, required: true },
   status: { type: String, default: 'open' },
   category: { type: String, default: null },
+  threadId: { type: Number, required: false, default: null },
 });
 
 const Supportee = mongoose.model(collectionName, SupporteeSchema);
@@ -101,6 +104,33 @@ export async function getTicketByUserId (
   const result = await Supportee.findOne(query);
   return result;
 };
+
+/**
+ * Stores the forum topic opened for a ticket in the staff chat.
+ *
+ * @param ticketId - Ticket the topic belongs to.
+ * @param threadId - Telegram message_thread_id of the topic.
+ */
+export async function setThreadId(ticketId: number, threadId: number) {
+  return await Supportee.findOneAndUpdate(
+    { ticketId },
+    { $set: { threadId } },
+    { new: true },
+  );
+}
+
+/**
+ * Looks a ticket up by the forum topic it lives in, so staff can just write in
+ * the topic instead of replying to a specific message.
+ *
+ * @param threadId - Telegram message_thread_id of the topic.
+ */
+export async function getTicketByThreadId(
+  threadId: number,
+): Promise<ISupportee | null> {
+  const result = await Supportee.findOne({ threadId });
+  return result as ISupportee | null;
+}
 
 export const getByTicketId = async (
   ticketId: string,

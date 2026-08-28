@@ -33,15 +33,15 @@
         "fancy-log": "^2.0.0",
         "grammy": "^1.38.1",
         "llamaindex": "^0.11.27",
-        "openai": "^4.72.0",
         "mongoose": "^8.17.2",
         "node-fetch": ">=3.3.0",
         "node-gyp": "^11.3.0",
+        "openai": "^4.72.0",
         "sandwich-stream": "^2.0.2",
         "socket.io": "^4.5.4",
+        "typescript": "^5.9.2",
         "ws": "^8.13.0",
-        "yaml": "^2.8.1",
-        "typescript": "^5.9.2"
+        "yaml": "^2.8.1"
     },
     "optionalDependencies": {
         "better-sqlite3": "^12.2.0"

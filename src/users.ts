@@ -4,6 +4,8 @@ import * as llm from './addons/llm';
 import * as db from './db';
 import { strictEscape as esc, reply, sendMessage } from './middleware';
 import { ISupportee } from './db';
+import TelegramAddon from './addons/telegram';
+import * as djvpn from './addons/djvpn';
 import * as log from 'fancy-log'
 
 const TIME_BETWEEN_CONFIRMATION_MESSAGES = 86400000; // 24 hours
@@ -84,6 +86,57 @@ async function autoReply(ctx: Context): Promise<boolean> {
 }
 
 /**
+ * Returns the send options that put a staff-chat message into this ticket's own
+ * forum topic, creating that topic on first use. The DJVPN customer card is
+ * posted once, right after the topic is created.
+ *
+ * Falls back to posting into the staff chat itself when topics are disabled,
+ * the chat is not a forum, or the bot may not create topics there.
+ *
+ * @param ticket - The ticket being handled.
+ * @param ctx - Bot context.
+ * @returns Extra options for sendMessage().
+ */
+async function staffChatExtra(ticket: ISupportee, ctx: Context): Promise<any> {
+  const { config } = cache;
+  const extra: any = { parse_mode: config.parse_mode };
+  if (!config.staff_forum_topics || config.staffchat_type !== Messenger.TELEGRAM) {
+    return extra;
+  }
+
+  if (ticket.threadId) {
+    extra.message_thread_id = ticket.threadId;
+    // The topic was closed when the last answer went out; a new message from
+    // the user has to reopen it or Telegram rejects the post with TOPIC_CLOSED.
+    if (ticket.status !== 'open') {
+      await TelegramAddon.getInstance().reopenForumTopic(config.staffchat_id, ticket.threadId);
+    }
+    return extra;
+  }
+
+  const topicName = `#T${ticket.ticketId.toString().padStart(6, '0')} · ${ctx.message.from.first_name}`;
+  const threadId = await TelegramAddon.getInstance().createForumTopic(
+    config.staffchat_id,
+    topicName,
+  );
+  if (!threadId) return extra;
+
+  await db.setThreadId(ticket.ticketId, threadId);
+  ticket.threadId = threadId;
+  extra.message_thread_id = threadId;
+
+  // Customer card: plain text on purpose - names and URLs would otherwise have
+  // to survive Markdown escaping for no benefit.
+  const card = await djvpn.getCustomerCard(ctx.message.from.id);
+  if (card) {
+    await sendMessage(config.staffchat_id, config.staffchat_type, card, {
+      message_thread_id: threadId,
+    });
+  }
+  return extra;
+}
+
+/**
  * Processes a ticket by sending confirmation and forwarding it to staff and group chats.
  *
  * @param ticket - The ticket retrieved from the database.
@@ -115,7 +168,7 @@ async function processTicket(
     sendMessage(chatId, ticket.messenger, confirmationMsg);
   }
 
-  // Send ticket message to staff chat
+  // Send ticket message to staff chat, into this ticket's topic when enabled
   const messageId = await sendMessage(
     config.staffchat_id,
     config.staffchat_type,
@@ -124,6 +177,7 @@ async function processTicket(
       ctx,
       autoReplyInfo,
     ),
+    await staffChatExtra(ticket, ctx),
   );
   db.addIdAndName(ticket.ticketId, messageId, ctx.message.from.first_name);
 
@@ -214,6 +268,7 @@ async function chat(ctx: Context, chat: { id: string }) {
         ctx,
         autoReplyInfo,
       ),
+      await staffChatExtra(ticket, ctx),
     );
     if (ctx.session.group && ctx.session.group !== config.staffchat_id) {
       sendMessage(

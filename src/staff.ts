@@ -1,6 +1,7 @@
 import cache from './cache';
 import * as middleware from './middleware';
 import * as db from './db';
+import TelegramAddon from './addons/telegram';
 import { Context } from './interfaces';
 import { ISupportee } from './db';
 import * as log from 'fancy-log'
@@ -105,25 +106,39 @@ async function chat(ctx: Context) {
     return;
   }
 
-  const replyMsg = ctx.message?.reply_to_message;
-  if (!replyMsg) return;
-
-  const replyText = replyMsg.text || replyMsg.caption;
-  const replyMessageId = ctx.message.external_reply?.message_id;
-  if (!replyText && !replyMessageId) return;
-
   var ticket;
   var ticketId;
-  if (replyMessageId) {
-    ticket = await db.getTicketByInternalId(replyMessageId);
+
+  // In a forum staff chat the topic itself identifies the ticket, so staff can
+  // just write in the topic instead of replying to a specific message.
+  const threadId = (ctx.message as any)?.message_thread_id;
+  if (cache.config.staff_forum_topics && threadId) {
+    ticket = await db.getTicketByThreadId(threadId);
     if (ticket) {
       ticketId = ticket.ticketId;
     }
-  } else {
-    ticketId = parseInt(await extractTicketId(replyText, ctx));
-    
-    if (!ticketId) return;
-    ticket = await db.getTicketById(ticketId, ctx.session.groupCategory);
+  }
+
+  const replyMsg = ctx.message?.reply_to_message;
+  const replyText = replyMsg?.text || replyMsg?.caption;
+
+  if (!ticket) {
+    if (!replyMsg) return;
+
+    const replyMessageId = ctx.message.external_reply?.message_id;
+    if (!replyText && !replyMessageId) return;
+
+    if (replyMessageId) {
+      ticket = await db.getTicketByInternalId(replyMessageId);
+      if (ticket) {
+        ticketId = ticket.ticketId;
+      }
+    } else {
+      ticketId = parseInt(await extractTicketId(replyText, ctx));
+
+      if (!ticketId) return;
+      ticket = await db.getTicketById(ticketId, ctx.session.groupCategory);
+    }
   }
 
   if (!ticket) {
@@ -133,10 +148,13 @@ async function chat(ctx: Context) {
   var name;
   if (ticket.name) {
     name = ticket.name;
-  } else {
+  } else if (replyText) {
     name = extractName(replyText);
   }
-  if (!name) return;
+  if (!name) {
+    middleware.reply(ctx, cache.config.language.ticketClosedError);
+    return;
+  }
 
   // Mark ticket as no longer active
   cache.ticketStatus[ticketId] = false;
@@ -162,13 +180,25 @@ async function chat(ctx: Context) {
     ctx.chat.id,
     cache.config.staffchat_type,
     `${cache.config.language.msg_sent} ${esc(name)}`,
+    {
+      parse_mode: cache.config.parse_mode,
+      ...(ticket.threadId ? { message_thread_id: ticket.threadId } : {}),
+    },
   );
   log.info(`Answer: ${ticketMsg(name, ctx.message)}`);
   cache.ticketSent[ticketId] = null;
 
   // Auto-close the ticket if enabled
   if (cache.config.auto_close_tickets) {
-      db.add(ticketId, 'closed', null, ticket.messenger);
+      await db.add(ticketId, 'closed', null, ticket.messenger);
+      // Keep the topic list readable: a closed ticket gets a closed topic. It is
+      // reopened automatically if the user writes again.
+      if (ticket.threadId && cache.config.staff_forum_topics) {
+        await TelegramAddon.getInstance().closeForumTopic(
+          cache.config.staffchat_id,
+          ticket.threadId,
+        );
+      }
   }
 }
 
