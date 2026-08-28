@@ -6,6 +6,8 @@ import { strictEscape as esc, reply, sendMessage } from './middleware';
 import { ISupportee } from './db';
 import TelegramAddon from './addons/telegram';
 import * as djvpn from './addons/djvpn';
+import * as lk from './addons/lk/notify';
+import { isLkUserId, shmUserIdFromLkUserId } from './addons/lk/ids';
 import * as log from 'fancy-log'
 
 const TIME_BETWEEN_CONFIRMATION_MESSAGES = 86400000; // 24 hours
@@ -27,7 +29,13 @@ function formatMessageAsTicket(
 ): string {
   const { config, userId } = cache;
   var name = `[${esc(ctx.message.from.first_name,)}](tg://user?id=${userId})`;
-  if (config.anonymous_tickets || config.staffchat_parse_mode === ParseMode.PLAINTEXT) {
+  if (
+    config.anonymous_tickets ||
+    config.staffchat_parse_mode === ParseMode.PLAINTEXT ||
+    // Cabinet-only customers have no Telegram profile to link to - a tg:// link
+    // built from their cabinet id just renders as a dead link for staff.
+    isLkUserId(userId)
+  ) {
     name = ctx.message.from.first_name;
   }
   return `${config.language.ticket} #T${ticket
@@ -86,6 +94,27 @@ async function autoReply(ctx: Context): Promise<boolean> {
 }
 
 /**
+ * Mirrors a customer's message into the personal cabinet, so their cabinet
+ * history is complete even for questions asked from Telegram.
+ *
+ * Skipped for messages that came from the cabinet in the first place - it has
+ * already stored those itself.
+ *
+ * @param ticket - The ticket the message belongs to.
+ * @param ctx - Bot context.
+ */
+async function mirrorIncoming(ticket: ISupportee, ctx: Context) {
+  if (!ticket.shmUserId || (ctx as any).lkOrigin) return;
+  await lk.notifyCabinet({
+    ticket_id: ticket.ticketId,
+    shm_user_id: ticket.shmUserId,
+    direction: 'in',
+    text: ctx.message.text,
+    external_id: `${ticket.ticketId}:tg:${ctx.message.message_id}`,
+  });
+}
+
+/**
  * Returns the send options that put a staff-chat message into this ticket's own
  * forum topic, creating that topic on first use. The DJVPN customer card is
  * posted once, right after the topic is created.
@@ -106,10 +135,13 @@ async function staffChatExtra(ticket: ISupportee, ctx: Context): Promise<any> {
 
   if (ticket.threadId) {
     extra.message_thread_id = ticket.threadId;
-    // The topic was closed when the last answer went out; a new message from
-    // the user has to reopen it or Telegram rejects the post with TOPIC_CLOSED.
-    if (ticket.status !== 'open') {
+    // The topic was closed when the last answer went out. The bot is an admin
+    // and could post into it anyway, but a live conversation should not sit in a
+    // topic the group shows as closed.
+    if (ticket.topicClosed) {
       await TelegramAddon.getInstance().reopenForumTopic(config.staffchat_id, ticket.threadId);
+      await db.setTopicClosed(ticket.ticketId, false);
+      ticket.topicClosed = false;
     }
     return extra;
   }
@@ -126,8 +158,14 @@ async function staffChatExtra(ticket: ISupportee, ctx: Context): Promise<any> {
   extra.message_thread_id = threadId;
 
   // Customer card: plain text on purpose - names and URLs would otherwise have
-  // to survive Markdown escaping for no benefit.
-  const card = await djvpn.getCustomerCard(ctx.message.from.id);
+  // to survive Markdown escaping for no benefit. Cabinet-only customers have no
+  // Telegram id, so they are looked up by their SHM user id instead.
+  const authorId = ctx.message.from.id;
+  const card = await djvpn.getCustomerCard(
+    isLkUserId(authorId)
+      ? { shmUserId: shmUserIdFromLkUserId(authorId) }
+      : { telegramId: authorId },
+  );
   if (card) {
     await sendMessage(config.staffchat_id, config.staffchat_type, card, {
       message_thread_id: threadId,
@@ -180,6 +218,7 @@ async function processTicket(
     await staffChatExtra(ticket, ctx),
   );
   db.addIdAndName(ticket.ticketId, messageId, ctx.message.from.first_name);
+  await mirrorIncoming(ticket, ctx);
 
   // If group flag is set and not the admin chat, forward to group chat
   if (ctx.session.group && ctx.session.group !== config.staffchat_id) {
@@ -270,6 +309,7 @@ async function chat(ctx: Context, chat: { id: string }) {
       ),
       await staffChatExtra(ticket, ctx),
     );
+    await mirrorIncoming(ticket, ctx);
     if (ctx.session.group && ctx.session.group !== config.staffchat_id) {
       sendMessage(
         ctx.session.group,

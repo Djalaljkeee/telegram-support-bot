@@ -138,27 +138,46 @@ async function getNodeNames(): Promise<Record<string, string>> {
 }
 
 /**
+ * How to find the customer: by Telegram id (the usual case) or by SHM user id
+ * (customers registered by e-mail, who reach us only through the cabinet).
+ */
+export interface CustomerRef {
+  telegramId?: string | number | null;
+  shmUserId?: number | null;
+}
+
+/**
  * Builds the customer card for a ticket author.
  *
- * @param telegramId - Telegram user id of the ticket author.
+ * @param ref - Telegram id, or a reference naming whichever id is known.
  * @returns Plain-text card, or null when the lookup is off or broke down.
  */
-export async function getCustomerCard(telegramId: string | number): Promise<string | null> {
+export async function getCustomerCard(
+  ref: CustomerRef | string | number,
+): Promise<string | null> {
   if (!isEnabled()) return null;
+  const { telegramId, shmUserId }: CustomerRef =
+    typeof ref === 'object' && ref !== null ? ref : { telegramId: ref as string | number };
+  if (!telegramId && !shmUserId) return null;
+
   try {
-    const users = await shm('/shm/v1/admin/user', { login: `@${telegramId}` });
+    const filter = telegramId ? { login: `@${telegramId}` } : { user_id: shmUserId };
+    const users = await shm('/shm/v1/admin/user', filter);
     if (users === null) {
       log.error('djvpn: SHM lookup unavailable');
       return null;
     }
     const user = users[0] as ShmUser | undefined;
     if (!user) {
-      return `🔎 Клиент не найден в SHM по telegram id ${telegramId}\n` +
-        '   (регистрация по e-mail или ещё не заводился)';
+      return telegramId
+        ? `🔎 Клиент не найден в SHM по telegram id ${telegramId}\n` +
+          '   (регистрация по e-mail или ещё не заводился)'
+        : `🔎 Клиент не найден в SHM по user_id ${shmUserId}`;
     }
 
+    const who = telegramId ? `tg ${telegramId}` : `логин ${user.login}`;
     const lines: string[] = [];
-    lines.push(`👤 ${user.full_name || '—'} · tg ${telegramId} · SHM #${user.user_id}`);
+    lines.push(`👤 ${user.full_name || '—'} · ${who} · SHM #${user.user_id}`);
     lines.push(
       `💳 Баланс ${Number(user.balance).toFixed(2)} ₽ · ` +
       `${user.block ? '⛔ ЗАБЛОКИРОВАН' : 'не заблокирован'} · ` +

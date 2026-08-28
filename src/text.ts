@@ -68,6 +68,13 @@ export async function ticketHandler(bot: Addon, ctx: Context): Promise<ISupporte
   // For private chats, check for an existing ticket; otherwise, create one.
   if (chat.type === 'private') {
     let ticket = await db.getTicketByUserId(message.from.id, session.groupCategory)
+    if (ticket && ticket.status !== 'open') {
+      // auto_close_tickets closes the ticket after every answer, so a returning
+      // customer would otherwise keep writing into a ticket that stays 'closed'
+      // forever - invisible to /open and misreported to the cabinet.
+      await db.add(message.from.id, 'open', session.groupCategory, messenger);
+      ticket.status = 'open';
+    }
     if (!ticket) {
       // db.add must be awaited: users.chat() reads the ticket back from the DB
       // immediately, so firing this off unawaited made every first message from

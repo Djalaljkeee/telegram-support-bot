@@ -6,6 +6,7 @@ import * as db from './db';
 import * as error from './error';
 import TelegramAddon from './addons/telegram';
 import SignalAddon from './addons/signal';
+import * as lkBridge from './addons/lk';
 import * as log from 'fancy-log'
 
 /**
@@ -73,6 +74,11 @@ async function main(logs = true) {
   const telegramAddon = addons.find((addon) => (addon as any).platform === 'telegram');
   if (cache.config.web_server && telegramAddon) {
     // webserver.init(telegramAddon);
+  }
+
+  // Bridge to the DJVPN personal cabinet (no-op unless configured).
+  if (telegramAddon) {
+    lkBridge.init();
   }
 
   // Initialize global error handling.

@@ -129,6 +129,18 @@ export class Config {
   staff_forum_topics: boolean = false;
   /** DJVPN-specific customer lookup (SHM billing + Remnawave panel). */
   djvpn: DjvpnConfig = new DjvpnConfig();
+  /** Bridge to the DJVPN personal cabinet chat widget. */
+  lk_bridge: LkBridgeConfig = new LkBridgeConfig();
+}
+
+export class LkBridgeConfig {
+  enabled: boolean = false;
+  /** Port of the internal bridge server. Never publish it outside docker. */
+  port: number = 8081;
+  /** Shared secret, required in both directions. */
+  secret: string = '';
+  /** Cabinet endpoint that receives mirrored messages. */
+  webhook_url: string = '';
 }
 
 export class DjvpnConfig {

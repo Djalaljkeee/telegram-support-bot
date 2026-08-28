@@ -2,6 +2,8 @@ import cache from './cache';
 import * as middleware from './middleware';
 import * as db from './db';
 import TelegramAddon from './addons/telegram';
+import * as lk from './addons/lk/notify';
+import { isLkUserId } from './addons/lk/ids';
 import { Context } from './interfaces';
 import { ISupportee } from './db';
 import * as log from 'fancy-log'
@@ -159,27 +161,52 @@ async function chat(ctx: Context) {
   // Mark ticket as no longer active
   cache.ticketStatus[ticketId] = false;
 
-  // Reply to web users differently
+  // Deliver to the customer. Cabinet-only customers have no Telegram chat with
+  // this bot at all; for everyone else the send can still fail with 403, because
+  // a bot may only write to someone who started *it* - a customer who knows us
+  // only through the cabinet never did. Neither case is a reason to fail the
+  // answer: the cabinet copy goes out below, and staff is told what happened.
+  let deliveredTelegram = false;
   if (ticket.userid.includes('WEB')) {
     try {
       const socketId = ticket.userid.split('WEB')[1];
       cache.io.to(socketId).emit('chat_staff', ticketMsg(name, ctx.message));
     } catch (e) {
-      middleware.sendMessage(
-        ctx.chat.id,
-        ticket.messenger,
-        `Web chat already closed.`,
-      );
       log.error(e);
     }
-  } else {
-    middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, ctx.message));
+  } else if (!isLkUserId(ticket.userid)) {
+    try {
+      await middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, ctx.message));
+      deliveredTelegram = true;
+    } catch (e) {
+      log.error('Could not deliver the answer to Telegram: ', e);
+    }
   }
+  // Mirror the answer into the personal cabinet. The text goes over raw, before
+  // strictEscape: Telegram's escaping renders as literal backslashes in a browser.
+  if (ticket.shmUserId) {
+    await lk.notifyCabinet({
+      ticket_id: ticket.ticketId,
+      shm_user_id: ticket.shmUserId,
+      direction: 'out',
+      text: ctx.message.text,
+      author: cache.config.anonymous_replies
+        ? cache.config.language.regardsGroup
+        : ctx.message.from.first_name,
+      external_id: `${ticket.ticketId}:staff:${ctx.message.message_id}`,
+      // Tells the cabinet whether it still has to reach the customer itself.
+      delivered_telegram: deliveredTelegram,
+    });
+  }
+
   const esc = middleware.strictEscape;
   middleware.sendMessage(
     ctx.chat.id,
     cache.config.staffchat_type,
-    `${cache.config.language.msg_sent} ${esc(name)}`,
+    `${cache.config.language.msg_sent} ${esc(name)}` +
+      (deliveredTelegram || ticket.userid.includes('WEB')
+        ? ''
+        : esc(' (в Telegram не доставлено, ответ ушёл в ЛК)')),
     {
       parse_mode: cache.config.parse_mode,
       ...(ticket.threadId ? { message_thread_id: ticket.threadId } : {}),
@@ -198,6 +225,7 @@ async function chat(ctx: Context) {
           cache.config.staffchat_id,
           ticket.threadId,
         );
+        await db.setTopicClosed(ticket.ticketId, true);
       }
   }
 }
