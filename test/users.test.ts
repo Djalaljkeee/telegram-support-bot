@@ -158,7 +158,9 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'staff123',
         'telegram',
-        expect.stringContaining('#T001001')
+        expect.stringContaining('#T001001'),
+        // Send options: parse mode, plus the ticket's forum topic when enabled.
+        expect.any(Object)
       );
     });
 
@@ -186,7 +188,9 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'staff123',
         'telegram',
-        expect.stringContaining('#T001002')
+        expect.stringContaining('#T001002'),
+        // Send options: parse mode, plus the ticket's forum topic when enabled.
+        expect.any(Object)
       );
     });
 
@@ -229,7 +233,9 @@ describe('Users Module', () => {
       expect(mockSendMessage).toHaveBeenCalledWith(
         'staff123',
         'telegram',
-        expect.stringContaining('#T001003')
+        expect.stringContaining('#T001003'),
+        // Send options: parse mode, plus the ticket's forum topic when enabled.
+        expect.any(Object)
       );
       
       expect(mockSendMessage).toHaveBeenCalledWith(
