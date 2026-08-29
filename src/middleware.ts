@@ -1,4 +1,5 @@
 import cache from './cache';
+import { isLkUserId } from './addons/lk/ids';
 import SignalAddon from './addons/signal';
 import { Context, Messenger } from './interfaces';
 import TelegramAddon from './addons/telegram';
@@ -47,6 +48,10 @@ async function sendMessage (
   extra: any = { parse_mode: cache.config.parse_mode }
 ): Promise<string | null> {
   const messengerType = messenger as Messenger;
+  // Cabinet-only customers have no Telegram chat to deliver to - their copy
+  // travels through the cabinet webhook instead (see addons/lk/notify).
+  if (isLkUserId(id)) return null;
+
   // Remove extra spaces
   const cleanedMsg = msg.replace(/ {2,}/g, ' ');
   

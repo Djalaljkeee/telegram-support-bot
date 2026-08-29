@@ -7,6 +7,11 @@
 services:
   supportbot:
     container_name: support-bot
+    # shm-cabinet - сеть ЛК: там бэкенд доступен как backend:8000, а бот виден
+    # ему как support-bot:8081. Порт моста наружу НЕ публикуется.
+    networks:
+      - default
+      - shm-cabinet
     # Апстримный CMD - `npm run prod`, а это `tsc && node build/index.js`.
     # В production-стадии Dockerfile нет ни src/, ни tsconfig.json, поэтому tsc
     # падает в справку и контейнер уходит в рестарт-луп. Код уже собран на
@@ -39,3 +44,7 @@ services:
     profiles: ["debug"]
     ports: !override
       - "127.0.0.1:8081:8081"
+
+networks:
+  shm-cabinet:
+    external: true

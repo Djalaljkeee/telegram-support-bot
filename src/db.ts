@@ -17,6 +17,10 @@ export interface ISupportee extends mongoose.Document {
   category: string | null;
   /** Forum topic (message_thread_id) opened for this ticket in the staff chat. */
   threadId: number | null;
+  /** SHM user id, set once the customer writes from the personal cabinet. */
+  shmUserId: number | null;
+  /** Whether this ticket's forum topic is currently closed in Telegram. */
+  topicClosed: boolean;
 }
 
 export const SupporteeSchema = new mongoose.Schema<ISupportee>({
@@ -28,6 +32,8 @@ export const SupporteeSchema = new mongoose.Schema<ISupportee>({
   status: { type: String, default: 'open' },
   category: { type: String, default: null },
   threadId: { type: Number, required: false, default: null },
+  shmUserId: { type: Number, required: false, default: null },
+  topicClosed: { type: Boolean, required: false, default: false },
 });
 
 const Supportee = mongoose.model(collectionName, SupporteeSchema);
@@ -120,6 +126,39 @@ export async function setThreadId(ticketId: number, threadId: number) {
 }
 
 /**
+ * Tracks whether the ticket's forum topic is closed.
+ *
+ * Kept separately from the ticket status: the status returns to 'open' as soon
+ * as the customer writes again, which happens before we get a chance to look at
+ * the topic, so it cannot tell us whether the topic still needs reopening.
+ *
+ * @param ticketId - Ticket the topic belongs to.
+ * @param closed - New topic state.
+ */
+export async function setTopicClosed(ticketId: number, closed: boolean) {
+  return await Supportee.findOneAndUpdate(
+    { ticketId },
+    { $set: { topicClosed: closed } },
+    { new: true },
+  );
+}
+
+/**
+ * Links a ticket to its SHM customer. From then on the ticket's messages are
+ * mirrored into the personal cabinet, including the ones written in Telegram.
+ *
+ * @param ticketId - Ticket to link.
+ * @param shmUserId - SHM user id.
+ */
+export async function setShmUserId(ticketId: number, shmUserId: number) {
+  return await Supportee.findOneAndUpdate(
+    { ticketId },
+    { $set: { shmUserId } },
+    { new: true },
+  );
+}
+
+/**
  * Looks a ticket up by the forum topic it lives in, so staff can just write in
  * the topic instead of replying to a specific message.
  *
@@ -205,11 +244,19 @@ export const add = async (
     };
     result = await Supportee.updateMany(query, { $set: { status: 'closed' } });
   } else if (status === 'open') {
-    let ticketId = await getNextTicketId();
-    result = await Supportee.findOneAndReplace(
+    const ticketId = await getNextTicketId();
+    // Update, never replace: a replace wipes threadId, internalIds and name and
+    // hands out a fresh ticketId. That path is reached for any *existing* closed
+    // ticket (files.ts reopens one this way, and auto_close_tickets closes every
+    // ticket after an answer), so replacing loses the customer's forum topic
+    // mid-conversation.
+    result = await Supportee.findOneAndUpdate(
       { messenger, userid },
-      { userid, messenger, ticketId, status, category },
-      { upsert: true }
+      {
+        $set: { status, category },
+        $setOnInsert: { userid, messenger, ticketId },
+      },
+      { upsert: true, new: true }
     );
   } else if (status === 'banned') {
     result = await Supportee.findOneAndReplace(
