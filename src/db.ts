@@ -21,6 +21,10 @@ export interface ISupportee extends mongoose.Document {
   shmUserId: number | null;
   /** Whether this ticket's forum topic is currently closed in Telegram. */
   topicClosed: boolean;
+  /** Assistant switched off for this ticket by staff (/ai off). */
+  llmOff: boolean;
+  /** When staff last answered - the assistant stays quiet for a while after. */
+  lastStaffReplyAt: Date | null;
 }
 
 export const SupporteeSchema = new mongoose.Schema<ISupportee>({
@@ -34,6 +38,8 @@ export const SupporteeSchema = new mongoose.Schema<ISupportee>({
   threadId: { type: Number, required: false, default: null },
   shmUserId: { type: Number, required: false, default: null },
   topicClosed: { type: Boolean, required: false, default: false },
+  llmOff: { type: Boolean, required: false, default: false },
+  lastStaffReplyAt: { type: Date, required: false, default: null },
 });
 
 const Supportee = mongoose.model(collectionName, SupporteeSchema);
@@ -139,6 +145,35 @@ export async function setTopicClosed(ticketId: number, closed: boolean) {
   return await Supportee.findOneAndUpdate(
     { ticketId },
     { $set: { topicClosed: closed } },
+    { new: true },
+  );
+}
+
+/**
+ * Switches the support assistant off (or back on) for one ticket.
+ *
+ * @param ticketId - Ticket to change.
+ * @param off - True to silence the assistant.
+ */
+export async function setLlmOff(ticketId: number, off: boolean) {
+  return await Supportee.findOneAndUpdate(
+    { ticketId },
+    { $set: { llmOff: off } },
+    { new: true },
+  );
+}
+
+/**
+ * Records that a human has just answered, which pauses the assistant on this
+ * ticket for `llm_handoff_minutes` so it cannot talk over an operator.
+ *
+ * @param ticketId - Ticket that was answered.
+ * @param at - Time of the answer.
+ */
+export async function setStaffReplyAt(ticketId: number, at: Date = new Date()) {
+  return await Supportee.findOneAndUpdate(
+    { ticketId },
+    { $set: { lastStaffReplyAt: at } },
     { new: true },
   );
 }

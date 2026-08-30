@@ -3,6 +3,7 @@ import * as middleware from './middleware';
 import * as db from './db';
 import TelegramAddon from './addons/telegram';
 import * as lk from './addons/lk/notify';
+import * as llm from './addons/llm';
 import { isLkUserId } from './addons/lk/ids';
 import { Context } from './interfaces';
 import { ISupportee } from './db';
@@ -214,6 +215,12 @@ async function chat(ctx: Context) {
   );
   log.info(`Answer: ${ticketMsg(name, ctx.message)}`);
   cache.ticketSent[ticketId] = null;
+
+  // A human is now in this conversation: remember what was said (so the
+  // assistant does not contradict it later) and pause the assistant on this
+  // ticket for `llm_handoff_minutes`.
+  await llm.history.record(ticket.ticketId, 'staff', ctx.message.text, ctx.message.from.first_name);
+  await db.setStaffReplyAt(ticket.ticketId);
 
   // Auto-close the ticket if enabled
   if (cache.config.auto_close_tickets) {

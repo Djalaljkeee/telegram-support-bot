@@ -46,7 +46,10 @@ jest.mock('../src/cache', () => ({
 }));
 
 jest.mock('../src/addons/llm', () => ({
-  getResponseFromLLM: jest.fn(),
+  isEnabled: jest.fn(() => false),
+  inHandoff: jest.fn(() => false),
+  buildAnswer: jest.fn(),
+  history: { record: jest.fn(), recent: jest.fn(async () => []) },
 }));
 
 jest.mock('fancy-log', () => ({

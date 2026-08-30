@@ -69,3 +69,4 @@ test/testing.js
 test/support.test.js
 config/support.db.old
 config/config.yaml
+config/config.yaml.bak-*

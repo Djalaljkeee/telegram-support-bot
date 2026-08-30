@@ -3,6 +3,7 @@ import cache from './cache';
 import * as middleware from './middleware';
 import { Context } from './interfaces';
 import { ISupportee } from './db';
+import * as llm from './addons/llm';
 import * as log from 'fancy-log'
 
 /**
@@ -14,6 +15,59 @@ import * as log from 'fancy-log'
 const extractTicketId = (replyText: string): string | undefined => {
   const match = replyText.match(new RegExp(`#T(.*) ${cache.config.language.from}`));
   return match ? match[1] : undefined;
+};
+
+/**
+ * Turns the support assistant on or off for one ticket.
+ *
+ * Works where staff already work: inside the ticket's forum topic, or as a
+ * reply to one of its messages. `/ai` alone reports the current state.
+ *
+ * @param ctx - The bot context.
+ */
+const aiCommand = async (ctx: Context): Promise<void> => {
+  if (!ctx.session.admin) return;
+  const language: any = cache.config.language;
+  const threadId = (ctx.message as any)?.message_thread_id;
+  const answer = (text: string) =>
+    middleware.sendMessage(ctx.chat.id, cache.config.staffchat_type, text, {
+      ...(threadId ? { message_thread_id: threadId } : {}),
+    });
+
+  let ticket: ISupportee | null = null;
+  if (cache.config.staff_forum_topics && threadId) {
+    ticket = await db.getTicketByThreadId(threadId);
+  }
+  if (!ticket) {
+    const replyText = ctx.message?.reply_to_message?.text;
+    const ticketId = replyText ? extractTicketId(replyText) : undefined;
+    if (ticketId) {
+      ticket = await db.getTicketById(parseInt(ticketId), ctx.session.groupCategory);
+    }
+  }
+  if (!ticket) {
+    await answer(language.llmNoTicket || 'Команда работает в теме тикета или ответом на его сообщение.');
+    return;
+  }
+
+  const argument = (ctx.message.text || '').toString().split(/\s+/)[1]?.toLowerCase();
+  if (argument === 'off' || argument === 'on') {
+    const off = argument === 'off';
+    await db.setLlmOff(ticket.ticketId, off);
+    await answer(off
+      ? (language.llmTurnedOff || '🤖 ИИ отключён для этого тикета.')
+      : (language.llmTurnedOn || '🤖 ИИ включён для этого тикета.'));
+    return;
+  }
+
+  const state = !llm.isEnabled()
+    ? (language.llmGloballyOff || '🤖 ИИ выключен в настройках бота.')
+    : (ticket as any).llmOff
+      ? (language.llmTurnedOff || '🤖 ИИ отключён для этого тикета.')
+      : llm.inHandoff(ticket)
+        ? (language.llmInHandoff || '🤖 Тикет ведёт оператор — ИИ временно молчит.')
+        : (language.llmTurnedOn || '🤖 ИИ включён для этого тикета.');
+  await answer(`${state}\n/ai on · /ai off`);
 };
 
 /**
@@ -200,6 +254,7 @@ const unbanCommand = (ctx: Context): void => {
 };
 
 export {
+  aiCommand,
   banCommand,
   openCommand,
   closeCommand,

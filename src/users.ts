@@ -62,14 +62,18 @@ function createAutoReplyMessage(msg: string, ctx: Context): string {
 }
 
 /**
- * Checks for common questions and LLM responses to auto-reply.
+ * Checks the configured keyword auto-replies.
+ *
+ * The LLM does not run from here: it needs the ticket (its topic, its history,
+ * the customer behind it), and at this point the ticket has not been resolved
+ * yet. See assistantStep(), which runs once the message has reached staff.
  *
  * @param ctx - Bot context.
  * @returns True if an auto-reply was sent; otherwise, false.
  */
 async function autoReply(ctx: Context): Promise<boolean> {
   const {
-    config: { autoreply, use_llm },
+    config: { autoreply },
   } = cache;
   const messageText = ctx.message.text.toString();
 
@@ -82,16 +86,93 @@ async function autoReply(ctx: Context): Promise<boolean> {
       }
     }
   }
-
-  // Fallback to LLM response if enabled
-  if (use_llm) {
-    const response = await llm.getResponseFromLLM(ctx);
-    if (response !== null) {
-      reply(ctx, createAutoReplyMessage(response, ctx));
-      return true;
-    }
-  }
   return false;
+}
+
+/**
+ * Posts a note into the ticket's topic (or the staff chat, without topics).
+ *
+ * Plain text on purpose: the note quotes a model-written answer, and a stray
+ * underscore in it would fail a MarkdownV2 send.
+ *
+ * @param ticket - Ticket the note belongs to.
+ * @param text - Note text.
+ */
+async function noteToStaff(ticket: ISupportee, text: string): Promise<void> {
+  const { config } = cache;
+  await sendMessage(config.staffchat_id, config.staffchat_type, text, {
+    ...(ticket.threadId ? { message_thread_id: ticket.threadId } : {}),
+  }).catch((e) => log.error('Could not post the assistant note: ', e));
+}
+
+/**
+ * Runs the support assistant on a message that has just reached staff.
+ *
+ * A confident answer goes to the customer (and to the cabinet, and into the
+ * topic so staff sees what was said); anything else is only a hint for the
+ * operator - the ticket is in the topic either way, so nobody is left waiting
+ * on a model that decided to stay quiet.
+ *
+ * @param ctx - Bot context of the incoming message.
+ * @param ticket - The ticket it belongs to.
+ */
+async function assistantStep(ctx: Context, ticket: ISupportee): Promise<void> {
+  if (!llm.isEnabled() || !ticket) return;
+  const { config } = cache;
+  const language: any = config.language;
+
+  try {
+    await llm.history.record(
+      ticket.ticketId,
+      'customer',
+      ctx.message.text,
+      ctx.message.from.first_name,
+    );
+    const answer = await llm.buildAnswer(ctx, ticket);
+    if (!answer) return;
+
+    if (!answer.confident) {
+      const lines = [language.llmUnsure || '🤖 ИИ не ответил — нужен оператор.'];
+      if (answer.reason) lines.push(answer.reason);
+      if (answer.text) lines.push('', `${language.llmDraft || 'Черновик:'} ${answer.text}`);
+      await noteToStaff(ticket, lines.join('\n'));
+      return;
+    }
+
+    // To the customer. Escaped, because the model writes plain prose and the
+    // customer-facing parse mode is MarkdownV2.
+    let deliveredTelegram = false;
+    try {
+      await sendMessage(
+        ctx.message.chat.id,
+        ctx.messenger,
+        createAutoReplyMessage(esc(answer.text), ctx),
+      );
+      deliveredTelegram = !isLkUserId(ticket.userid);
+    } catch (e) {
+      log.error('Could not deliver the assistant answer: ', e);
+    }
+
+    if (ticket.shmUserId) {
+      await lk.notifyCabinet({
+        ticket_id: ticket.ticketId,
+        shm_user_id: ticket.shmUserId,
+        direction: 'out',
+        text: answer.text,
+        author: language.automatedReplyAuthor,
+        external_id: `${ticket.ticketId}:ai:${ctx.message.message_id}`,
+        delivered_telegram: deliveredTelegram,
+      });
+    }
+
+    await llm.history.record(ticket.ticketId, 'assistant', answer.text);
+    await noteToStaff(
+      ticket,
+      `${language.llmAnswered || '🤖 ИИ ответил клиенту:'}\n\n${answer.text}`,
+    );
+  } catch (e) {
+    log.error('Assistant step failed: ', e);
+  }
 }
 
 /**
@@ -211,6 +292,8 @@ async function chat(ctx: Context, chat: { id: string }) {
   cache.userId = ctx.message.from.id;
   const isAutoReply = await autoReply(ctx);
   if (isAutoReply && !config.show_auto_replied) return;
+  /** Message rejected as spam: neither staff nor the assistant sees it. */
+  let spammed = false;
   const autoReplyInfo = isAutoReply ? config.language.automatedReplySent : undefined;
 
   // Ensure the user's ticket is tracked
@@ -264,7 +347,12 @@ async function chat(ctx: Context, chat: { id: string }) {
     }
   } else if (cache.ticketSent[cache.userId] === config.spam_cant_msg) {
     cache.ticketSent[cache.userId]++;
+    spammed = true;
     sendMessage(chat.id, ctx.messenger, config.language.blockedSpam);
+  } else {
+    // Past the limit the message is dropped without a word to anyone; the
+    // assistant must not answer what staff never saw either.
+    spammed = true;
   }
 
   // Log the ticket message for debugging
@@ -277,6 +365,11 @@ async function chat(ctx: Context, chat: { id: string }) {
         autoReplyInfo,
       ),
     );
+    // Last, and only once the message is with staff: the assistant answers on
+    // top of a ticket that already exists, never instead of one.
+    if (!isAutoReply && !spammed) {
+      await assistantStep(ctx, ticket);
+    }
   }
 }
 
