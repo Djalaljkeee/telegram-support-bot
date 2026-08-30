@@ -14,12 +14,15 @@
  */
 import express from 'express';
 import crypto from 'crypto';
+import cache from '../../cache';
 import * as db from '../../db';
 import { ticketHandler } from '../../text';
 import TelegramAddon from '../telegram';
 import { Context, Messenger, SessionData } from '../../interfaces';
 import { lkUserId } from './ids';
 import { config as conf, isEnabled } from './notify';
+import { MAX_CABINET_FILE_BYTES, kindFor } from './attachments';
+import { staffChatExtra } from '../../topics';
 import * as log from 'fancy-log';
 
 const DEDUPE_TTL_MS = 10 * 60 * 1000;
@@ -48,6 +51,25 @@ interface LkMessageBody {
   text: string;
   client_msg_id: string;
 }
+
+interface LkAttachmentBody {
+  shm_user_id: number;
+  telegram_id?: number | string | null;
+  name?: string;
+  /** Text the customer wrote next to the file. Optional. */
+  caption?: string;
+  client_msg_id: string;
+  file: {
+    name: string;
+    mime: string;
+    size?: number;
+    /** File contents, base64. */
+    data_b64: string;
+  };
+}
+
+/** Telegram truncates captions at 1024 characters. */
+const MAX_CAPTION = 1000;
 
 /** Constant-time secret comparison - a plain === leaks length and prefix. */
 function secretOk(given: string | undefined): boolean {
@@ -137,6 +159,13 @@ async function ensureTicket(userid: string, shmUserId: number) {
   if (!ticket) {
     await db.add(userid, 'open', null, Messenger.TELEGRAM);
     ticket = await db.getTicketByUserId(userid, null);
+  } else if (ticket.status !== 'open') {
+    // auto_close_tickets closes a ticket after every answer, so a returning
+    // customer would otherwise keep writing into a 'closed' one - invisible to
+    // /open and misreported to the cabinet. ticketHandler() does the same for
+    // messages arriving over Telegram.
+    await db.add(userid, 'open', null, Messenger.TELEGRAM);
+    ticket.status = 'open';
   }
   if (!ticket) return null;
   // Remember who this is on the cabinet side: from now on staff answers to this
@@ -184,6 +213,80 @@ async function handleMessage(req: express.Request, res: express.Response) {
   return res.json({ ok: true, ticket_id: ticket.ticketId });
 }
 
+/**
+ * Serves one file uploaded in the cabinet widget: it goes into the ticket's
+ * forum topic, next to everything the customer wrote in Telegram.
+ *
+ * The file arrives base64-encoded in the JSON body - see ./attachments for why.
+ */
+async function handleAttachment(req: express.Request, res: express.Response) {
+  const body = req.body as LkAttachmentBody;
+  const file = body?.file;
+  if (!body || !body.shm_user_id || !body.client_msg_id || !file || !file.data_b64) {
+    return res
+      .status(400)
+      .json({ error: 'shm_user_id, client_msg_id and file.data_b64 are required' });
+  }
+
+  const data = Buffer.from(file.data_b64, 'base64');
+  if (!data.length) return res.status(400).json({ error: 'empty file' });
+  if (data.length > MAX_CABINET_FILE_BYTES) {
+    return res.status(413).json({ error: 'file too large' });
+  }
+
+  sweepSeen();
+  const seen = seenMessages.get(body.client_msg_id);
+  if (seen) {
+    return res.json({ ok: true, ticket_id: seen.ticketId, duplicate: true });
+  }
+
+  const userid = body.telegram_id
+    ? String(body.telegram_id)
+    : lkUserId(body.shm_user_id);
+
+  const banned = await new Promise<boolean>((resolve) => {
+    db.checkBan(userid, Messenger.TELEGRAM, (ticket: any) => resolve(!!ticket));
+  });
+  if (banned) {
+    return res.status(403).json({ error: 'banned' });
+  }
+
+  const name = body.name || `Клиент #${body.shm_user_id}`;
+  const ticket = await ensureTicket(userid, Number(body.shm_user_id));
+  if (!ticket) {
+    return res.status(500).json({ error: 'could not create ticket' });
+  }
+
+  const caption = String(body.caption || '').slice(0, MAX_CAPTION);
+  const { config: cfg } = cache;
+  const fileName = String(file.name || 'file').slice(0, 128);
+  const header =
+    `${cfg.language.ticket} #T${ticket.ticketId.toString().padStart(6, '0')} ` +
+    `${cfg.language.from} ${name} · из ЛК`;
+
+  const messageId = await serialize(async () => {
+    // The topic (and the customer card in it) is created here on first contact,
+    // exactly as it would be for a text message.
+    const extra = await staffChatExtra(ticket, buildContext(userid, name, caption));
+    return TelegramAddon.getInstance().sendMedia(
+      cfg.staffchat_id,
+      kindFor(file.mime, fileName),
+      TelegramAddon.getInstance().inputFile(data, fileName),
+      {
+        // No parse_mode on purpose: the caption carries a raw file name and raw
+        // customer text, and a single stray underscore would fail the send.
+        caption: `${header}\n\n${caption}`.slice(0, MAX_CAPTION),
+        ...(extra.message_thread_id ? { message_thread_id: extra.message_thread_id } : {}),
+      },
+    );
+  });
+
+  // Staff answer to this file by replying to it, so it needs to be findable.
+  db.addIdAndName(ticket.ticketId, messageId, name);
+  seenMessages.set(body.client_msg_id, { at: Date.now(), ticketId: ticket.ticketId });
+  return res.json({ ok: true, ticket_id: ticket.ticketId });
+}
+
 /** Starts the bridge server. No-op unless `lk_bridge.enabled` is set. */
 export function init(): void {
   const c = conf();
@@ -194,16 +297,26 @@ export function init(): void {
   }
 
   const app = express();
-  app.use(express.json({ limit: '64kb' }));
 
   app.get('/lk/health', (_req, res) => res.json({ ok: true }));
 
-  app.post('/lk/message', (req, res) => {
+  app.post('/lk/message', express.json({ limit: '64kb' }), (req, res) => {
     if (!secretOk(req.header('x-bridge-secret'))) {
       return res.status(401).json({ error: 'unauthorized' });
     }
     handleMessage(req, res).catch((e) => {
       log.error('lk: message handling failed:', e);
+      if (!res.headersSent) res.status(500).json({ error: 'internal error' });
+    });
+  });
+
+  // Base64 inflates a 10 MB file to ~13.4 MB, plus the envelope around it.
+  app.post('/lk/attachment', express.json({ limit: '20mb' }), (req, res) => {
+    if (!secretOk(req.header('x-bridge-secret'))) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    handleAttachment(req, res).catch((e) => {
+      log.error('lk: attachment handling failed:', e);
       if (!res.headersSent) res.status(500).json({ error: 'internal error' });
     });
   });

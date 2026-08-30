@@ -3,6 +3,10 @@ import cache from './cache';
 import * as middleware from './middleware';
 import { Addon, Context, ModeData } from './interfaces';
 import { ISupportee } from './db';
+import { staffChatExtra } from './topics';
+import { isLkUserId } from './addons/lk/ids';
+import { fileRefFromMessage, mirrorTelegramFile } from './addons/lk/attachments';
+import * as log from 'fancy-log';
 
 /**
  * Generates the reply markup for a private reply.
@@ -32,6 +36,34 @@ const replyMarkup = (ctx: Context): object => {
     ],
   };
 };
+
+/**
+ * Sends one file, preferring the addon's sendMedia() because it reports the
+ * message id back - staff replies are matched by the message they answer, so a
+ * file sent without an id would drop out of its ticket.
+ *
+ * @param bot - The bot addon instance.
+ * @param type - 'document', 'photo' or 'video'.
+ * @param chatId - Target chat.
+ * @param file - Telegram file id.
+ * @param options - Send options.
+ * @returns Message id, or null.
+ */
+async function sendFile(
+  bot: Addon,
+  type: string,
+  chatId: string | number,
+  file: any,
+  options: any
+): Promise<string | null> {
+  if (bot.sendMedia) {
+    return bot.sendMedia(chatId, type as 'photo' | 'document' | 'video', file, options);
+  }
+  const legacy =
+    type === 'document' ? bot.sendDocument : type === 'photo' ? bot.sendPhoto : bot.sendVideo;
+  const result: any = await legacy.call(bot, chatId, file, options);
+  return result ?? null;
+}
 
 /**
  * Handles forwarding of files (document, photo, video) to staff.
@@ -84,85 +116,91 @@ async function fileHandler(type: string, bot: Addon, ctx: Context) {
   }
 
   const fileId = (await ctx.getFile()).file_id;
-  const commonOptions = {
+  // A staff answer carries no user info: forwardFile() only builds it for
+  // private chats, i.e. for messages written by a customer.
+  const isStaffAnswer = session.admin && userInfo === undefined;
+  const toStaffChat = !isPrivate && !isStaffAnswer;
+  // Cabinet-only customers have no Telegram chat with this bot at all, so the
+  // answer can only travel through the cabinet mirror below.
+  const cabinetOnly = isStaffAnswer && isLkUserId(receiverId);
+
+  const commonOptions: any = {
     caption: captionText,
     reply_markup: isPrivate ? replyMarkup(ctx) : {},
   };
+  if (toStaffChat) {
+    // Put the file into the ticket's own forum topic, exactly like its text
+    // messages - otherwise screenshots pile up in General, detached from the
+    // conversation they belong to. Only the topic is taken from the extra:
+    // captions here are raw, and parse_mode would choke on the first stray
+    // underscore in a file name.
+    const extra = await staffChatExtra(ticket, ctx);
+    if (extra.message_thread_id) commonOptions.message_thread_id = extra.message_thread_id;
+  }
 
-  // Send the file based on its type
-  var messageId = null;
-  switch (type) {
-    case 'document':
-      messageId = await bot.sendDocument(receiverId, fileId, commonOptions);
-      if (
-        session.group !== '' &&
-        session.group !== config.staffchat_id &&
-        JSON.stringify(session.modeData) !== JSON.stringify({})
-      ) {
-        bot.sendDocument(session.group, fileId, {
-          caption: captionText,
-          reply_markup: {
-            html: '',
-            inline_keyboard: [
-              [
-                {
-                  text: config.language.replyPrivate,
-                  callback_data: `${ctx.from.id}---${message.from.first_name}---${session.groupCategory}---${ticket.id}`,
-                },
-              ],
+  let messageId: string | null = null;
+  if (!cabinetOnly) {
+    try {
+      messageId = await sendFile(bot, type, receiverId, fileId, commonOptions);
+    } catch (e) {
+      log.error('Could not deliver the file to Telegram: ', e);
+    }
+    if (
+      session.group !== '' &&
+      session.group !== config.staffchat_id &&
+      JSON.stringify(session.modeData) !== JSON.stringify({})
+    ) {
+      await sendFile(bot, type, session.group, fileId, {
+        caption: captionText,
+        reply_markup: {
+          html: '',
+          inline_keyboard: [
+            [
+              {
+                text: config.language.replyPrivate,
+                callback_data: `${ctx.from.id}---${message.from.first_name}---${session.groupCategory}---${ticket.id}`,
+              },
             ],
-          },
-        });
-      } 
-      break;
-    case 'photo':
-      messageId = await bot.sendPhoto(receiverId, fileId, commonOptions);
-      if (
-        session.group !== '' &&
-        session.group !== config.staffchat_id &&
-        JSON.stringify(session.modeData) !== JSON.stringify({})
-      ) {
-        bot.sendPhoto(session.group, fileId, {
-          caption: captionText,
-          reply_markup: {
-            html: '',
-            inline_keyboard: [
-              [
-                {
-                  text: config.language.replyPrivate,
-                  callback_data: `${ctx.from.id}---${message.from.first_name}---${session.groupCategory}---${ticket.id}`,
-                },
-              ],
-            ],
-          },
-        });
-      }
-      break;
-    case 'video':
-      messageId = await bot.sendVideo(receiverId, fileId, commonOptions);
-      if (
-        session.group !== '' &&
-        session.group !== config.staffchat_id &&
-        JSON.stringify(session.modeData) !== JSON.stringify({})
-      ) {
-        bot.sendVideo(session.group, fileId, {
-          caption: captionText,
-          reply_markup: {
-            html: '',
-            inline_keyboard: [
-              [
-                {
-                  text: config.language.replyPrivate,
-                  callback_data: `${ctx.from.id}---${message.from.first_name}---${session.groupCategory}---${ticket.id}`,
-                },
-              ],
-            ],
-          },
-        });
-      }
-      break;
+          ],
+        },
+      });
+    }
   }
   db.addIdAndName(ticket.ticketId, messageId, ctx.message.from.first_name);
+
+  // Mirror the file into the personal cabinet, so its history holds the whole
+  // conversation - screenshots included - whichever side sent them.
+  const ref = fileRefFromMessage(message, type);
+  if (ref && ticket.shmUserId && !(ctx as any).lkOrigin) {
+    const mirrored = await mirrorTelegramFile({
+      ticketId: ticket.ticketId,
+      shmUserId: ticket.shmUserId,
+      ref,
+      caption: message.caption || '',
+      direction: isStaffAnswer ? 'out' : 'in',
+      externalId: `${ticket.ticketId}:${isStaffAnswer ? 'staff' : 'tg'}:${message.message_id}`,
+      author: isStaffAnswer
+        ? config.anonymous_replies
+          ? config.language.regardsGroup
+          : message.from.first_name
+        : undefined,
+      deliveredTelegram: isStaffAnswer ? messageId !== null : undefined,
+    });
+    if (isStaffAnswer && (cabinetOnly || messageId === null)) {
+      middleware.sendMessage(
+        ctx.chat.id,
+        cache.config.staffchat_type,
+        mirrored
+          ? 'Файл ушёл в личный кабинет клиента (в Telegram не доставлен).'
+          : 'Файл не удалось доставить ни в Telegram, ни в кабинет.',
+        { ...(commonOptions.message_thread_id
+          ? { message_thread_id: commonOptions.message_thread_id }
+          : (ctx.message as any)?.message_thread_id
+            ? { message_thread_id: (ctx.message as any).message_thread_id }
+            : {}) }
+      );
+    }
+  }
 
   // Send confirmation message if enabled
   if (!config.autoreply_confirmation) return;

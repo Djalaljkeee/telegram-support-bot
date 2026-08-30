@@ -1,4 +1,15 @@
 
+// The OpenAI client is constructed at import time in src/addons/llm.ts, so any
+// suite that reaches it transitively (files -> topics -> telegram -> handlers)
+// needs a constructor here. Suites that assert on LLM behaviour override this
+// with their own jest.mock('openai', ...).
+jest.mock('openai', () => ({
+    __esModule: true,
+    default: jest.fn().mockImplementation(() => ({
+        chat: { completions: { create: jest.fn() } },
+    })),
+}));
+
 jest.mock('../src/cache', () => ({
     config: {
         parse_mode: 'MarkdownV2',

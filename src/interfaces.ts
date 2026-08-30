@@ -141,6 +141,8 @@ export class LkBridgeConfig {
   secret: string = '';
   /** Cabinet endpoint that receives mirrored messages. */
   webhook_url: string = '';
+  /** Cabinet endpoint for mirrored files. Defaults to `<webhook_url>-file`. */
+  webhook_file_url: string = '';
 }
 
 export class DjvpnConfig {
@@ -249,6 +251,25 @@ export interface Addon {
    * @param options Optional parameters (e.g. caption, recipients).
    */
   sendVideo(chatId: string | number, video: any, options?: any): void | Promise<void> | Promise<string | null>;
+
+  /**
+   * Sends a file and returns its message id.
+   *
+   * Optional: only the Telegram addon implements it. Unlike sendPhoto() and
+   * friends it reports the message id back, which is what lets a file stay part
+   * of a ticket (staff replies are matched by the message they answer).
+   *
+   * @param chatId The target chat identifier.
+   * @param kind 'photo', 'document' or 'video'.
+   * @param file File id, URL or an addon-specific file object.
+   * @param options Optional parameters (caption, message_thread_id, …).
+   */
+  sendMedia?(
+    chatId: string | number,
+    kind: 'photo' | 'document' | 'video',
+    file: any,
+    options?: any
+  ): Promise<string | null>;
 
   /**
    * Registers a command handler.

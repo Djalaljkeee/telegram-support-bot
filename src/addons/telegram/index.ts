@@ -1,4 +1,4 @@
-import { Bot, Context as GrammyContext, SessionFlavor, session } from 'grammy';
+import { Bot, Context as GrammyContext, InputFile, SessionFlavor, session } from 'grammy';
 import { Addon, Context, Messenger, SessionData } from '../../interfaces';
 import { apiThrottler } from '@grammyjs/transformer-throttler';
 import * as middleware from '../../middleware';
@@ -19,7 +19,11 @@ class TelegramAddon implements Addon {
   private static forumUnavailableUntil: Record<string, number> = {};
   private static readonly FORUM_RETRY_MS = 10 * 60 * 1000;
 
+  /** Kept for the file API: downloads go to api.telegram.org/file/bot<token>/… */
+  private readonly token: string;
+
   private constructor(token: string) {
+    this.token = token;
     this.bot = new Bot<BotContext>(token);
     const throttler = apiThrottler();
     this.bot.api.config.use(throttler);
@@ -128,6 +132,64 @@ class TelegramAddon implements Addon {
     } catch (e) {
       // Already open, or the topic is gone - nothing to do either way.
     }
+  }
+
+  /**
+   * Sends a file and returns its message id.
+   *
+   * The `sendPhoto`/`sendDocument`/`sendVideo` below are the Addon interface and
+   * return nothing, so a caller cannot record the message id and staff replies
+   * to a file end up with no ticket to attach to. Use this one for anything that
+   * has to stay part of the conversation.
+   *
+   * @param chatId - Target chat.
+   * @param kind - 'photo', 'document' or 'video'.
+   * @param file - Telegram file id, URL or InputFile.
+   * @param options - Extra send options (caption, message_thread_id, …).
+   * @returns Message id, or null when the send failed.
+   */
+  async sendMedia(
+    chatId: string | number,
+    kind: 'photo' | 'document' | 'video',
+    file: any,
+    options: any = {}
+  ): Promise<string | null> {
+    const target = chatId.toString();
+    let response;
+    if (kind === 'photo') {
+      response = await this.bot.api.sendPhoto(target, file, options);
+    } else if (kind === 'video') {
+      response = await this.bot.api.sendVideo(target, file, options);
+    } else {
+      response = await this.bot.api.sendDocument(target, file, options);
+    }
+    return response?.message_id != null ? response.message_id.toString() : null;
+  }
+
+  /**
+   * Wraps a buffer so it can be handed to sendMedia().
+   *
+   * @param data - File contents.
+   * @param name - File name shown in Telegram.
+   */
+  inputFile(data: Buffer, name: string): InputFile {
+    return new InputFile(data, name);
+  }
+
+  /**
+   * Downloads a file from Telegram.
+   *
+   * @param fileId - Telegram file id.
+   * @returns File contents, or null when Telegram has no path for it (files
+   *          older than the bot API retention, or over the 20 MB download cap).
+   */
+  async fetchFile(fileId: string): Promise<Buffer | null> {
+    const file = await this.bot.api.getFile(fileId);
+    if (!file.file_path) return null;
+    const url = `https://api.telegram.org/file/bot${this.token}/${file.file_path}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`file download failed with ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
   }
 
   sendDocument = (
