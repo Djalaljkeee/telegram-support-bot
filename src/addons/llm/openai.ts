@@ -8,9 +8,9 @@
 import OpenAI from 'openai';
 import cache from '../../cache';
 import { ChatMessage, LlmProvider } from './provider';
+import { modelFor } from './router';
 import * as log from 'fancy-log';
 
-const DEFAULT_MODEL = 'claude-opus-4.8';
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_MAX_TOKENS = 600;
 
@@ -64,11 +64,12 @@ export class OpenAiProvider implements LlmProvider {
    * Sends one completion request.
    *
    * @param messages - Conversation to complete.
+   * @param model - Model to use; defaults to the `answer` lane.
    * @returns The assistant's text.
    */
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[], model?: string): Promise<string> {
     const response = await this.client.chat.completions.create({
-      model: (conf().llm_model || DEFAULT_MODEL).toString(),
+      model: model || modelFor('answer'),
       // Support answers should be reproducible, not creative.
       temperature: 0.1,
       max_tokens: Number(conf().llm_max_tokens) || DEFAULT_MAX_TOKENS,

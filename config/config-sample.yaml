@@ -141,6 +141,16 @@ llm_api_key: 'API_KEY'
 llm_base_url: 'https://api.openai.com/v1'
 llm_model: 'gpt-4o-mini'
 
+# Per-task models. Everything falls back to llm_model above, so this whole block
+# is optional; set a lane only to send that one task somewhere else.
+#   answer   - every customer message (the only lane that always runs)
+#   escalate - tried once when `answer` replies with something unparseable.
+#              Off unless set, and ignored when equal to `answer`: a retry costs
+#              the customer a second wait, so it must buy a different model.
+# llm_models:
+#   answer: 'gpt-4o-mini'
+#   escalate: 'gpt-4o'
+
 # Knowledge: every .md/.txt file in the directory, then the single file, then
 # the inline llm_knowledge below. config/ is bind-mounted, so edits need no
 # rebuild. Only the sections related to the question are sent to the model.

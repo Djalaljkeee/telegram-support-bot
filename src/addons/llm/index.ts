@@ -15,12 +15,14 @@ import type { Context } from '../../interfaces';
 import type { ISupportee } from '../../db';
 import * as djvpn from '../djvpn';
 import { isLkUserId, shmUserIdFromLkUserId } from '../lk/ids';
-import { ChatMessage, getProvider } from './provider';
+import { ChatMessage, LlmProvider, getProvider } from './provider';
+import { modelFor } from './router';
 import * as knowledge from './knowledge';
 import * as history from './history';
 import * as log from 'fancy-log';
 
 export { history, knowledge };
+export { modelFor } from './router';
 
 const DEFAULT_HISTORY_MESSAGES = 20;
 const DEFAULT_HANDOFF_MINUTES = 180;
@@ -138,6 +140,35 @@ export function parseVerdict(raw: string): AiAnswer | null {
 }
 
 /**
+ * Asks the model, and tries the escalate lane once when it answers with noise.
+ *
+ * A completion the parser cannot read costs the customer the answer either way,
+ * so one retry on a second model is worth the extra wait. A thrown request is
+ * deliberately not retried: that is the endpoint failing, and a second lane on
+ * the same endpoint would only make the customer wait twice for it.
+ *
+ * @param provider - The configured provider.
+ * @param messages - Conversation to complete.
+ * @returns The verdict, or null when no lane produced a readable one.
+ */
+async function ask(provider: LlmProvider, messages: ChatMessage[]): Promise<AiAnswer | null> {
+  const raw = await provider.chat(messages, modelFor('answer'));
+  const verdict = parseVerdict(raw);
+  if (verdict) return verdict;
+
+  const escalate = modelFor('escalate');
+  if (!escalate) {
+    log.error(`llm: unusable completion: ${raw.slice(0, 200)}`);
+    return null;
+  }
+
+  log.error(`llm: unusable completion, retrying on ${escalate}: ${raw.slice(0, 200)}`);
+  const retried = parseVerdict(await provider.chat(messages, escalate));
+  if (!retried) log.error(`llm: unusable completion from ${escalate} too`);
+  return retried;
+}
+
+/**
  * Produces an answer for the customer's latest message.
  *
  * The caller decides what to do with it: a confident answer is sent to the
@@ -182,13 +213,7 @@ export async function buildAnswer(ctx: Context, ticket: ISupportee): Promise<AiA
       messages.push({ role: 'user', content: question });
     }
 
-    const raw = await provider.chat(messages);
-    const verdict = parseVerdict(raw);
-    if (!verdict) {
-      log.error(`llm: unusable completion: ${raw.slice(0, 200)}`);
-      return null;
-    }
-    return verdict;
+    return await ask(provider, messages);
   } catch (e) {
     log.error('llm: could not build an answer:', e);
     return null;

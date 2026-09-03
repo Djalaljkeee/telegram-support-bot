@@ -66,6 +66,18 @@ describe('OpenAiProvider', () => {
     expect(sent[0]).toMatchObject({ model: 'claude-opus-4.8', max_tokens: 600, temperature: 0.1 });
   });
 
+  it('sends the model the caller routed the request to', async () => {
+    await OpenAiProvider.create().chat([{ role: 'user', content: 'привет' }], 'claude-fable-5');
+    expect(sent[0].model).toBe('claude-fable-5');
+  });
+
+  it('falls back to the answer lane when the caller names no model', async () => {
+    config.llm_models = { answer: 'claude-opus-5' };
+    await OpenAiProvider.create().chat([{ role: 'user', content: 'привет' }]);
+    expect(sent[0].model).toBe('claude-opus-5');
+    delete config.llm_models;
+  });
+
   it('sends the rules, the knowledge and the customer card as one leading system message', async () => {
     await OpenAiProvider.create().chat([
       { role: 'system', content: 'правила' },
