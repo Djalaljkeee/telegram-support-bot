@@ -13,8 +13,13 @@ export interface ChatMessage {
 
 export interface LlmProvider {
   readonly name: string;
-  /** Returns the model's reply text, or throws. */
-  chat(messages: ChatMessage[]): Promise<string>;
+  /**
+   * Returns the model's reply text, or throws.
+   *
+   * `model` overrides the configured one, so the caller can route a single
+   * request to another lane (see `router.ts`) without a second client.
+   */
+  chat(messages: ChatMessage[], model?: string): Promise<string>;
 }
 
 /**

@@ -135,7 +135,10 @@ export class Config {
   llm_api_key: string;
   /** Endpoint root, e.g. https://api.openai.com/v1. Empty means OpenAI itself. */
   llm_base_url: string;
-  llm_model: string = 'claude-opus-4.8';
+  /** Model used by every lane that has no entry in `llm_models`. */
+  llm_model: string = 'claude-opus-5';
+  /** Per-task models; see `addons/llm/router.ts`. Optional. */
+  llm_models: { answer?: string; escalate?: string };
   /** Inline knowledge base - a fallback for when no knowledge files exist. */
   llm_knowledge: string;
   /** Knowledge file, read on every question (edits need no restart). */

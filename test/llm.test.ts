@@ -190,6 +190,43 @@ describe('buildAnswer', () => {
   it('stays quiet when the model answers with something unparseable', async () => {
     mockChat.mockResolvedValue('я не знаю');
     expect(await llm.buildAnswer(ctx, ticket)).toBeNull();
+    expect(mockChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the model named by the answer lane', async () => {
+    config.llm_models = { answer: 'claude-opus-5' };
+    mockChat.mockResolvedValue('{"confident": true, "answer": "ответ"}');
+    await llm.buildAnswer(ctx, ticket);
+    expect(mockChat.mock.calls[0][1]).toBe('claude-opus-5');
+    delete config.llm_models;
+  });
+
+  it('retries once on the escalate lane when the answer is unreadable', async () => {
+    config.llm_models = { answer: 'claude-opus-5', escalate: 'claude-fable-5' };
+    mockChat
+      .mockResolvedValueOnce('я не знаю')
+      .mockResolvedValueOnce('{"confident": true, "answer": "со второй попытки"}');
+    const answer = await llm.buildAnswer(ctx, ticket);
+    expect(answer.text).toBe('со второй попытки');
+    expect(mockChat).toHaveBeenCalledTimes(2);
+    expect(mockChat.mock.calls[1][1]).toBe('claude-fable-5');
+    delete config.llm_models;
+  });
+
+  it('gives up when the escalate lane answers with noise too', async () => {
+    config.llm_models = { answer: 'claude-opus-5', escalate: 'claude-fable-5' };
+    mockChat.mockResolvedValue('тоже не знаю');
+    expect(await llm.buildAnswer(ctx, ticket)).toBeNull();
+    expect(mockChat).toHaveBeenCalledTimes(2);
+    delete config.llm_models;
+  });
+
+  it('does not spend the escalate lane on a failing endpoint', async () => {
+    config.llm_models = { answer: 'claude-opus-5', escalate: 'claude-fable-5' };
+    mockChat.mockRejectedValue(new Error('llm: 429 rate limited'));
+    expect(await llm.buildAnswer(ctx, ticket)).toBeNull();
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    delete config.llm_models;
   });
 
   it('is disabled without knowledge, key or the config switch', async () => {
