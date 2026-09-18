@@ -83,6 +83,14 @@ language:
   automatedReplySent: 'Automated reply was send to the user.'
   ticketReopened: 'Ticket reopened.'
   regardsGroup: 'Botty Group'
+  llmAnswered: '🤖 The assistant answered the customer:'
+  llmUnsure: '🤖 The assistant did not answer - an operator is needed.'
+  llmDraft: 'Draft:'
+  llmTurnedOn: '🤖 Assistant enabled for this ticket.'
+  llmTurnedOff: '🤖 Assistant disabled for this ticket.'
+  llmInHandoff: '🤖 An operator is handling this ticket - the assistant stays quiet.'
+  llmGloballyOff: '🤖 The assistant is switched off in the bot config.'
+  llmNoTicket: 'Use this command inside a ticket topic, or as a reply to one of its messages.'
 
 autoreply:
   - question: 'install'
@@ -120,10 +128,42 @@ autoreply:
 #  - name: "Contact"
 #    msg: "Check out our Website"
 
+# --- Support assistant (LLM) ---
+# It answers a customer only when the answer follows from the knowledge base or
+# from that customer's own account data; otherwise it stays silent towards the
+# customer and leaves a note for staff in the ticket's topic. Staff can switch
+# it off for a single ticket with /ai off.
 use_llm: false # Will enable show_auto_replied when set to true
+
+# Any OpenAI-compatible chat-completions endpoint: OpenAI itself, or a gateway
+# serving other models behind the same wire format. Only these three change.
 llm_api_key: 'API_KEY'
 llm_base_url: 'https://api.openai.com/v1'
-llm_model: 'qwen-2.5-7b-instruct'
+llm_model: 'gpt-4o-mini'
+
+# Per-task models. Everything falls back to llm_model above, so this whole block
+# is optional; set a lane only to send that one task somewhere else.
+#   answer   - every customer message (the only lane that always runs)
+#   escalate - tried once when `answer` replies with something unparseable.
+#              Off unless set, and ignored when equal to `answer`: a retry costs
+#              the customer a second wait, so it must buy a different model.
+# llm_models:
+#   answer: 'gpt-4o-mini'
+#   escalate: 'gpt-4o'
+
+# Knowledge: every .md/.txt file in the directory, then the single file, then
+# the inline llm_knowledge below. config/ is bind-mounted, so edits need no
+# rebuild. Only the sections related to the question are sent to the model.
+llm_knowledge_dir: './config/knowledge'
+llm_knowledge_file: './config/knowledge.md'
+llm_knowledge_chars: 12000
+
+llm_history_messages: 20   # ticket messages the assistant may see
+llm_history_days: 14       # how long that memory is kept
+llm_handoff_minutes: 180   # silence after a staff answer
+llm_max_answer_chars: 900
+llm_max_tokens: 600
+llm_timeout_ms: 20000
 llm_knowledge: >
     Q: What is Botspace?
     A: Botspace is a cloud-based project management tool designed for teams to collaborate, track tasks, and manage workflows efficiently.

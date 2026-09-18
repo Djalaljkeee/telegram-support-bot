@@ -68,6 +68,15 @@ export interface Language {
   yourTicketId: string;
   helpCommandStaffText: string;
   regardsGroup: string;
+  /** Assistant notes in the staff chat and /ai answers. */
+  llmAnswered: string;
+  llmUnsure: string;
+  llmDraft: string;
+  llmTurnedOn: string;
+  llmTurnedOff: string;
+  llmInHandoff: string;
+  llmGloballyOff: string;
+  llmNoTicket: string;
   autoreply: Autoreply[];
 }
 
@@ -120,11 +129,34 @@ export class Config {
   pass_start: boolean = false;
   categories: Category[] = [];
   mongodb_uri: string = 'mongodb://mongodb:27017/support';
+  /** Support assistant: answers a customer when it is sure, hands over when not. */
   use_llm: boolean = false;
+  /** API key of the OpenAI-compatible endpoint that serves the assistant. */
   llm_api_key: string;
+  /** Endpoint root, e.g. https://api.openai.com/v1. Empty means OpenAI itself. */
   llm_base_url: string;
-  llm_model: string;
+  /** Model used by every lane that has no entry in `llm_models`. */
+  llm_model: string = 'claude-opus-5';
+  /** Per-task models; see `addons/llm/router.ts`. Optional. */
+  llm_models: { answer?: string; escalate?: string };
+  /** Inline knowledge base - a fallback for when no knowledge files exist. */
   llm_knowledge: string;
+  /** Knowledge file, read on every question (edits need no restart). */
+  llm_knowledge_file: string = './config/knowledge.md';
+  /** Directory of knowledge files (.md/.txt), for exported knowledge bases. */
+  llm_knowledge_dir: string = './config/knowledge';
+  /** How much knowledge text may go into one prompt. */
+  llm_knowledge_chars: number = 12000;
+  /** How many past ticket messages the assistant may see. */
+  llm_history_messages: number = 20;
+  /** How long ticket memory is kept. */
+  llm_history_days: number = 14;
+  /** How long the assistant stays quiet after a staff answer. */
+  llm_handoff_minutes: number = 180;
+  /** Hard cap on an answer sent to a customer. */
+  llm_max_answer_chars: number = 900;
+  llm_max_tokens: number = 600;
+  llm_timeout_ms: number = 20000;
   /** Open one forum topic per ticket in the staff supergroup. */
   staff_forum_topics: boolean = false;
   /** DJVPN-specific customer lookup (SHM billing + Remnawave panel). */

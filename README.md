@@ -56,6 +56,25 @@ llm_knowledge: >
 
 > Use cases: FAQ generation, fallback replies when no staff replies, 24/7 automated assistant, hybrid staff-AI workflows.
 
+The assistant only speaks to a customer when the answer follows from the
+knowledge base or from that customer's own account data; anything else is
+handed to a human, with a one-line note in the ticket saying what is needed.
+
+```yaml
+llm_knowledge_dir: './config/knowledge'   # every .md/.txt file here is knowledge
+llm_knowledge_file: './config/knowledge.md'
+llm_knowledge_chars: 12000                # how much of it may go into one prompt
+llm_history_messages: 20                  # ticket messages the assistant may see
+llm_history_days: 14                      # how long that memory is kept
+llm_handoff_minutes: 180                  # silence after a staff answer
+```
+
+`config/` is bind-mounted, so knowledge edits need no rebuild and no restart.
+Staff can steer a single ticket from its topic: `/ai off` mutes the assistant
+there, `/ai on` brings it back, and a plain `/ai` reports the current state.
+When the assistant is not confident it stays silent towards the customer and
+posts its draft into the topic for the operator to send or rewrite.
+
 ## 📜 Commands
 
 Currently the support chat offers these commands (staff commands):
