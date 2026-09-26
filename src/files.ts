@@ -75,25 +75,29 @@ async function sendFile(
 async function fileHandler(type: string, bot: Addon, ctx: Context) {
   const { message, session } = ctx;
   const { config } = cache;
-  let userid: string | null;
-  let replyText = '';
 
-  // If replying to a message and if the session is admin, extract ticket info
-  if (message && message.reply_to_message?.text && session.admin) {
-    replyText = message.reply_to_message.text || message.reply_to_message.caption;
-    if (!replyText) return;
-    userid = await (await db.getTicketByInternalId(message.external_reply.message_id)).userid;
-    if (!userid) return;
-  }
-  if (!userid) {
-    userid = message.from.id;
+  // A file posted by staff in the staff chat is an answer, and its ticket has to
+  // come from the chat itself - never from the sender. Falling back to
+  // message.from.id resolved the operator's *own* ticket, so a screenshot sent
+  // into a customer's topic went to the operator's private chat with the bot.
+  const fromStaffChat = session.admin && ctx.chat.type !== 'private';
+  let ticket: ISupportee | null = null;
+  if (fromStaffChat) {
+    ticket = await staffFileTicket(ctx);
+    if (!ticket) {
+      middleware.reply(ctx, config.language.ticketClosedError);
+      return;
+    }
   }
 
-  const userInfo = await forwardFile(ctx);
+  // forwardFile() is the customer path: it (re)opens the sender's own ticket.
+  const userInfo = fromStaffChat ? undefined : await forwardFile(ctx);
   let receiverId: string | number = config.staffchat_id;
   let isPrivate = false;
 
-  const ticket = await db.getTicketByUserId(userid, session.groupCategory);
+  if (!ticket) {
+    ticket = await db.getTicketByUserId(message.from.id, session.groupCategory);
+  }
   if (!ticket) {
     if (session.admin && userInfo === undefined) {
       middleware.reply(ctx, config.language.ticketClosedError);
@@ -208,15 +212,46 @@ async function fileHandler(type: string, bot: Addon, ctx: Context) {
     ? config.language.yourTicketId + ' #T' + ticket.id.toString().padStart(6, '0')
     : ''
     }`;
-  if (session.admin && userInfo === undefined) {
-    const nameMatch = replyText.match(
-      new RegExp(`${config.language.from} (.*) ${config.language.language}`)
+  if (isStaffAnswer) {
+    // Undelivered files were already reported above.
+    if (messageId === null) return;
+    // Into the ticket's topic: without message_thread_id it lands in General.
+    middleware.sendMessage(
+      ctx.chat.id,
+      cache.config.staffchat_type,
+      `${config.language.file_sent} ${ticket.name || ''}`.trim(),
+      ticket.threadId ? { message_thread_id: ticket.threadId } : {},
     );
-    if (!nameMatch) return;
-    confirmationMessage = `${config.language.file_sent} ${nameMatch[1]}`;
+    return;
   }
   middleware.sendMessage(ctx.chat.id, ticket.messenger, confirmationMessage);
 };
+
+/**
+ * Finds the ticket a file posted by staff in the staff chat answers: the forum
+ * topic it was posted in, otherwise the ticket message it replies to.
+ *
+ * @param ctx - The bot context.
+ * @returns The ticket, or null when the file answers no ticket.
+ */
+async function staffFileTicket(ctx: Context): Promise<ISupportee | null> {
+  const message: any = ctx.message;
+  const threadId = message?.message_thread_id;
+  if (cache.config.staff_forum_topics && threadId) {
+    const ticket = await db.getTicketByThreadId(threadId);
+    if (ticket) return ticket;
+  }
+  const reply = message?.reply_to_message;
+  if (!reply) return null;
+  const replyId = message.external_reply?.message_id || reply.message_id;
+  if (replyId) {
+    const ticket = await db.getTicketByInternalId(replyId);
+    if (ticket) return ticket;
+  }
+  const match = (reply.text || reply.caption || '').match(/#T(\d+)/);
+  if (!match) return null;
+  return db.getTicketById(parseInt(match[1]), ctx.session.groupCategory);
+}
 
 /**
  * Handles file forwarding with caching and spam protection.
