@@ -4,6 +4,8 @@ import * as middleware from './middleware';
 import { Context } from './interfaces';
 import { ISupportee } from './db';
 import * as llm from './addons/llm';
+import TelegramAddon from './addons/telegram';
+import { isLkUserId } from './addons/lk/ids';
 import * as log from 'fancy-log'
 
 /**
@@ -18,6 +20,39 @@ const extractTicketId = (replyText: string): string | undefined => {
 };
 
 /**
+ * Finds the ticket a staff command is about: the forum topic it was sent in,
+ * otherwise the ticket message it replies to.
+ *
+ * @param ctx - The bot context.
+ * @returns The ticket, or null when the command names no ticket.
+ */
+async function staffCommandTicket(ctx: Context): Promise<ISupportee | null> {
+  const threadId = (ctx.message as any)?.message_thread_id;
+  if (cache.config.staff_forum_topics && threadId) {
+    const ticket = await db.getTicketByThreadId(threadId);
+    if (ticket) return ticket;
+  }
+  const reply = ctx.message?.reply_to_message;
+  const replyText = reply?.text || reply?.caption;
+  const ticketId = replyText ? extractTicketId(replyText) : undefined;
+  if (!ticketId) return null;
+  return db.getTicketById(parseInt(ticketId), ctx.session.groupCategory);
+}
+
+/**
+ * Replies to a staff command in the topic it was sent from.
+ *
+ * @param ctx - The bot context.
+ * @param text - The answer.
+ */
+function staffAnswer(ctx: Context, text: string) {
+  const threadId = (ctx.message as any)?.message_thread_id;
+  return middleware.sendMessage(ctx.chat.id, cache.config.staffchat_type, text, {
+    ...(threadId ? { message_thread_id: threadId } : {}),
+  });
+}
+
+/**
  * Turns the support assistant on or off for one ticket.
  *
  * Works where staff already work: inside the ticket's forum topic, or as a
@@ -28,23 +63,9 @@ const extractTicketId = (replyText: string): string | undefined => {
 const aiCommand = async (ctx: Context): Promise<void> => {
   if (!ctx.session.admin) return;
   const language: any = cache.config.language;
-  const threadId = (ctx.message as any)?.message_thread_id;
-  const answer = (text: string) =>
-    middleware.sendMessage(ctx.chat.id, cache.config.staffchat_type, text, {
-      ...(threadId ? { message_thread_id: threadId } : {}),
-    });
+  const answer = (text: string) => staffAnswer(ctx, text);
 
-  let ticket: ISupportee | null = null;
-  if (cache.config.staff_forum_topics && threadId) {
-    ticket = await db.getTicketByThreadId(threadId);
-  }
-  if (!ticket) {
-    const replyText = ctx.message?.reply_to_message?.text;
-    const ticketId = replyText ? extractTicketId(replyText) : undefined;
-    if (ticketId) {
-      ticket = await db.getTicketById(parseInt(ticketId), ctx.session.groupCategory);
-    }
-  }
+  const ticket = await staffCommandTicket(ctx);
   if (!ticket) {
     await answer(language.llmNoTicket || 'Команда работает в теме тикета или ответом на его сообщение.');
     return;
@@ -139,55 +160,48 @@ const openCommand = (ctx: Context): void => {
 /**
  * Close a specific ticket.
  *
+ * Works inside the ticket's forum topic (no reply needed) or as a reply to one
+ * of its messages. Closes the topic too; it reopens when the customer writes.
+ *
  * @param ctx - The bot context.
  */
-const closeCommand = (ctx: Context): void => {
+const closeCommand = async (ctx: Context): Promise<void> => {
   if (!ctx.session.admin) return;
-  const groups: string[] = [];
-  const { categories, language } = cache.config;
+  const language: any = cache.config.language;
 
-  if (categories) {
-    categories.forEach(category => {
-      if (!category.subgroups || category.subgroups.length === 0) {
-        if (category.group_id == ctx.chat.id) groups.push(category.name);
-      } else {
-        category.subgroups.forEach((sub: { group_id: any; name: string }) => {
-          if (sub.group_id == ctx.chat.id) groups.push(sub.name);
-        });
-      }
-    });
+  const ticket = await staffCommandTicket(ctx);
+  if (!ticket) {
+    await staffAnswer(ctx, language.closeNoTicket || 'Команда работает в теме тикета или ответом на его сообщение.');
+    return;
   }
 
-  // Only process if the reply is to a bot message
-  if (!ctx.message.reply_to_message.from.is_bot) return;
-  const replyText = ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption;
-  if (!replyText) return;
-  const ticketId = extractTicketId(replyText);
-  if (!ticketId) return;
+  const paddedTicket = ticket.ticketId.toString().padStart(6, '0');
+  const closedText = `${language.ticket} #T${paddedTicket} ${language.closed}`;
+  await db.add(ticket.userid, 'closed', ticket.category, ticket.messenger);
+  delete cache.ticketIDs[ticket.userid];
+  delete cache.ticketStatus[ticket.userid];
+  delete cache.ticketStatus[ticket.ticketId];
+  delete cache.ticketSent[ticket.userid];
+  delete cache.ticketSent[ticket.ticketId];
+  await staffAnswer(ctx, closedText);
 
-  db.open((tickets: ISupportee[]) => {
-    if (!tickets) {
-      log.info('Close command: tickets undefined');
-      return;
+  // Cabinet-only customers never started this bot, so there is no chat to tell.
+  if (!isLkUserId(ticket.userid) && !ticket.userid.includes('WEB')) {
+    try {
+      await middleware.sendMessage(
+        ticket.userid,
+        ticket.messenger,
+        `${closedText}\n\n${language.ticketClosed}`,
+      );
+    } catch (e) {
+      log.error('Could not tell the customer the ticket is closed: ', e);
     }
-    let userId: any = null;
-    tickets.forEach(ticket => {
-      if (ticket.id.toString().padStart(6, '0') === ticketId) {
-        db.add(ticket.userid, 'closed', ticket.category, ctx.messenger);
-      }
-      userId = ticket.userid;
-    });
-    const paddedTicket = ticketId.toString().padStart(6, '0');
-    middleware.reply(ctx, `${cache.config.language.ticket} #T${paddedTicket} ${cache.config.language.closed}`);
-    middleware.sendMessage(
-      userId,
-      ctx.messenger,
-      `${cache.config.language.ticket} #T${paddedTicket} ${cache.config.language.closed}\n\n${cache.config.language.ticketClosed}`
-    );
-    delete cache.ticketIDs[userId];
-    delete cache.ticketStatus[userId];
-    delete cache.ticketSent[userId];
-  }, groups);
+  }
+
+  if (ticket.threadId && cache.config.staff_forum_topics) {
+    await TelegramAddon.getInstance().closeForumTopic(cache.config.staffchat_id, ticket.threadId);
+    await db.setTopicClosed(ticket.ticketId, true);
+  }
 };
 
 /**
