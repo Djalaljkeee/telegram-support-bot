@@ -17,6 +17,14 @@ jest.mock('../src/db', () => ({
   }),
   reopen: jest.fn(), // Add reopen mock
   add: jest.fn(),    // Add add mock
+  getTicketByThreadId: jest.fn().mockResolvedValue(null),
+  getTicketById: jest.fn().mockResolvedValue(null),
+  setTopicClosed: jest.fn(),
+}));
+
+jest.mock('../src/addons/telegram', () => ({
+  __esModule: true,
+  default: { getInstance: () => ({ closeForumTopic: jest.fn() }) },
 }));
 
 jest.mock('../src/cache', () => ({
