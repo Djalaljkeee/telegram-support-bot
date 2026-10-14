@@ -24,14 +24,29 @@ const strictEscape = (str: string): string => {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;'); // Escape single quotes
     case 'Markdown':
-      // Escape special Markdown characters (square brackets separately for safety)
-      return str
-        .replace(/([[\]_*`])/g, '\$1')
-        .replace(/(\[|\])/g, '\$1');
+      // Legacy Markdown: only _ * ` [ are special, and a backslash escapes
+      // them. (This used to be '\$1', which JS reads as plain '$1' - a no-op,
+      // so a lone underscore in a name made Telegram reject the whole message.)
+      return str.replace(/([[_*`])/g, '\\$1');
     default:
       return str.toString();
   }
 };
+
+/**
+ * Escapes text that goes inside the [label](url) of a link.
+ *
+ * Legacy Markdown has no escapes inside an entity - a backslash there would be
+ * shown as is - so for it only the brackets that would end the label are
+ * dropped. The other modes escape as usual.
+ *
+ * @param str - The link label.
+ * @returns The label, safe to put between [ and ].
+ */
+const linkLabel = (str: string): string =>
+  cache.config.parse_mode === 'Markdown'
+    ? str.replace(/[[\]]/g, '')
+    : strictEscape(str);
 
 /**
  * Sends a message through the appropriate messenger addon.
@@ -85,4 +100,4 @@ const reply = (
   sendMessage(ctx.message.chat.id, ctx.messenger, msgText, extra);
 };
 
-export { strictEscape, sendMessage, reply };
+export { strictEscape, linkLabel, sendMessage, reply };

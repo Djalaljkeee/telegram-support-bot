@@ -85,6 +85,8 @@ language:
   regardsGroup: 'Botty Group'
   llmAnswered: '🤖 The assistant answered the customer:'
   llmUnsure: '🤖 The assistant did not answer - an operator is needed.'
+  llmUndelivered: '⚠️ The assistant answer was NOT delivered to the customer - an operator is needed.'
+  llmCabinetOnly: '⚠️ The assistant answer reached the cabinet only, Telegram rejected it:'
   llmDraft: 'Draft:'
   llmTurnedOn: '🤖 Assistant enabled for this ticket.'
   llmTurnedOff: '🤖 Assistant disabled for this ticket.'

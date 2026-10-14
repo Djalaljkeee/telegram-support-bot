@@ -9,6 +9,7 @@ jest.mock('../src/middleware', () => ({
   sendMessage: mockSendMessage,
   reply: mockReply,
   strictEscape: jest.fn((str) => str),
+  linkLabel: jest.fn((str) => str),
 }));
 
 jest.mock('../src/db', () => ({
