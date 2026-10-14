@@ -2,7 +2,7 @@ import { Context, Messenger, ParseMode } from './interfaces';
 import cache from './cache';
 import * as llm from './addons/llm';
 import * as db from './db';
-import { strictEscape as esc, reply, sendMessage } from './middleware';
+import { strictEscape as esc, linkLabel, reply, sendMessage } from './middleware';
 import { ISupportee } from './db';
 import TelegramAddon from './addons/telegram';
 import * as djvpn from './addons/djvpn';
@@ -29,7 +29,7 @@ function formatMessageAsTicket(
   autoReplyInfo?: any,
 ): string {
   const { config, userId } = cache;
-  var name = `[${esc(ctx.message.from.first_name,)}](tg://user?id=${userId})`;
+  var name = `[${linkLabel(ctx.message.from.first_name)}](tg://user?id=${userId})`;
   if (
     config.anonymous_tickets ||
     config.staffchat_parse_mode === ParseMode.PLAINTEXT ||
@@ -140,8 +140,9 @@ async function assistantStep(ctx: Context, ticket: ISupportee): Promise<void> {
     }
 
     // To the customer. Escaped, because the model writes plain prose and the
-    // customer-facing parse mode is MarkdownV2.
+    // customer-facing parse mode is Markdown.
     let deliveredTelegram = false;
+    let sendError: string | null = null;
     try {
       await sendMessage(
         ctx.message.chat.id,
@@ -149,8 +150,26 @@ async function assistantStep(ctx: Context, ticket: ISupportee): Promise<void> {
         createAutoReplyMessage(esc(answer.text), ctx),
       );
       deliveredTelegram = !isLkUserId(ticket.userid);
-    } catch (e) {
+    } catch (e: any) {
       log.error('Could not deliver the assistant answer: ', e);
+      sendError = e?.description || e?.message || String(e);
+    }
+
+    // A failed send must not look like an answer: staff would see "ИИ ответил"
+    // and leave the customer waiting (ticket #18). Unless the cabinet still
+    // carries it, the answer is handed to the operator as an undelivered draft.
+    if (sendError && !ticket.shmUserId) {
+      await noteToStaff(
+        ticket,
+        [
+          language.llmUndelivered ||
+            '⚠️ Ответ ИИ клиенту НЕ доставлен — нужен оператор.',
+          sendError,
+          '',
+          `${language.llmDraft || 'Черновик:'} ${answer.text}`,
+        ].join('\n'),
+      );
+      return;
     }
 
     if (ticket.shmUserId) {
@@ -168,7 +187,9 @@ async function assistantStep(ctx: Context, ticket: ISupportee): Promise<void> {
     await llm.history.record(ticket.ticketId, 'assistant', answer.text);
     await noteToStaff(
       ticket,
-      `${language.llmAnswered || '🤖 ИИ ответил клиенту:'}\n\n${answer.text}`,
+      sendError
+        ? `${language.llmCabinetOnly || '⚠️ Ответ ИИ ушёл только в ЛК, в Telegram не доставлен:'} ${sendError}\n\n${answer.text}`
+        : `${language.llmAnswered || '🤖 ИИ ответил клиенту:'}\n\n${answer.text}`,
     );
   } catch (e) {
     log.error('Assistant step failed: ', e);

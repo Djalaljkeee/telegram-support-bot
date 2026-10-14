@@ -71,6 +71,8 @@ export interface Language {
   /** Assistant notes in the staff chat and /ai answers. */
   llmAnswered: string;
   llmUnsure: string;
+  llmUndelivered: string;
+  llmCabinetOnly: string;
   llmDraft: string;
   llmTurnedOn: string;
   llmTurnedOff: string;
