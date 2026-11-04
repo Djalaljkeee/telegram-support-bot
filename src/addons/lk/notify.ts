@@ -101,11 +101,12 @@ async function post(url: string, payload: unknown, timeoutMs: number): Promise<b
  * degrades the cabinet history rather than losing the answer outright.
  *
  * @param payload - Message to mirror into the cabinet.
+ * @returns Whether the cabinet stored it - the caller may want to warn staff.
  */
-export async function notifyCabinet(payload: CabinetMessage): Promise<void> {
+export async function notifyCabinet(payload: CabinetMessage): Promise<boolean> {
   const c = config();
-  if (!isEnabled() || !c.webhook_url || !payload.shm_user_id) return;
-  await post(c.webhook_url, payload, WEBHOOK_TIMEOUT_MS);
+  if (!isEnabled() || !c.webhook_url || !payload.shm_user_id) return false;
+  return post(c.webhook_url, payload, WEBHOOK_TIMEOUT_MS);
 }
 
 /**

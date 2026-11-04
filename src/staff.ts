@@ -16,11 +16,40 @@ import * as log from 'fancy-log'
  * @param message - The message object.
  * @returns The formatted ticket message.
  */
+/** The part of a send failure worth showing: never the payload with the text. */
+function errorText(e: any): string {
+  return e?.description || e?.message || String(e);
+}
+
+/**
+ * Sends an operator's answer to the customer. If Telegram rejects the markup,
+ * the same answer goes once more unformatted and unescaped: a customer getting
+ * a stray asterisk is better than a customer getting nothing.
+ */
+async function sendToCustomer(
+  ticket: ISupportee,
+  name: string,
+  message: { text: any; from: { first_name: any } },
+): Promise<void> {
+  try {
+    await middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, message));
+  } catch (e: any) {
+    if (!/can't parse entities/i.test(errorText(e))) throw e;
+    log.error('Markup rejected, resending as plain text: ', errorText(e));
+    await middleware.sendMessage(
+      ticket.userid,
+      ticket.messenger,
+      ticketMsg(name, message, (str) => str),
+      {},
+    );
+  }
+}
+
 function ticketMsg(
   name: string,
   message: { text: any; from: { first_name: any } },
+  esc: (str: string) => string = middleware.strictEscape,
 ): string {
-  const esc = middleware.strictEscape;
   const { config } = cache;
   if (config.clean_replies) {
     return esc(message.text);
@@ -168,25 +197,30 @@ async function chat(ctx: Context) {
   // only through the cabinet never did. Neither case is a reason to fail the
   // answer: the cabinet copy goes out below, and staff is told what happened.
   let deliveredTelegram = false;
+  let deliveredWeb = false;
+  let sendError: string | null = null;
   if (ticket.userid.includes('WEB')) {
     try {
       const socketId = ticket.userid.split('WEB')[1];
       cache.io.to(socketId).emit('chat_staff', ticketMsg(name, ctx.message));
+      deliveredWeb = true;
     } catch (e) {
       log.error(e);
     }
   } else if (!isLkUserId(ticket.userid)) {
     try {
-      await middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, ctx.message));
+      await sendToCustomer(ticket, name, ctx.message);
       deliveredTelegram = true;
-    } catch (e) {
-      log.error('Could not deliver the answer to Telegram: ', e);
+    } catch (e: any) {
+      log.error('Could not deliver the answer to Telegram: ', errorText(e));
+      sendError = errorText(e);
     }
   }
   // Mirror the answer into the personal cabinet. The text goes over raw, before
   // strictEscape: Telegram's escaping renders as literal backslashes in a browser.
+  let deliveredCabinet = false;
   if (ticket.shmUserId) {
-    await lk.notifyCabinet({
+    deliveredCabinet = await lk.notifyCabinet({
       ticket_id: ticket.ticketId,
       shm_user_id: ticket.shmUserId,
       direction: 'out',
@@ -200,17 +234,36 @@ async function chat(ctx: Context) {
     });
   }
 
+  const delivered = deliveredTelegram || deliveredWeb || deliveredCabinet;
   const esc = middleware.strictEscape;
+  // Telegram's error text is not markup, and neither may this notice fail on it.
+  const topic = ticket.threadId ? { message_thread_id: ticket.threadId } : {};
+  if (!delivered) {
+    await middleware
+      .sendMessage(
+        ctx.chat.id,
+        cache.config.staffchat_type,
+        `⚠️ Ответ НЕ доставлен клиенту ${name}, тикет остаётся открытым.` +
+          (sendError ? `\n${sendError}` : ''),
+        { ...topic },
+      )
+      .catch((e: any) => log.error('Could not warn staff: ', errorText(e)));
+    log.error(`Answer to ticket ${ticket.ticketId} was not delivered`);
+    cache.ticketSent[ticketId] = null;
+    // Nothing reached the customer: no "said" history, no assistant pause, and
+    // above all no auto-close that would bury the unanswered ticket.
+    return;
+  }
   middleware.sendMessage(
     ctx.chat.id,
     cache.config.staffchat_type,
     `${cache.config.language.msg_sent} ${esc(name)}` +
-      (deliveredTelegram || ticket.userid.includes('WEB')
+      (deliveredTelegram || deliveredWeb
         ? ''
         : esc(' (в Telegram не доставлено, ответ ушёл в ЛК)')),
     {
       parse_mode: cache.config.parse_mode,
-      ...(ticket.threadId ? { message_thread_id: ticket.threadId } : {}),
+      ...topic,
     },
   );
   log.info(`Answer: ${ticketMsg(name, ctx.message)}`);
