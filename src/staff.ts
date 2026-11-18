@@ -22,26 +22,79 @@ function errorText(e: any): string {
 }
 
 /**
- * Sends an operator's answer to the customer. If Telegram rejects the markup,
- * the same answer goes once more unformatted and unescaped: a customer getting
- * a stray asterisk is better than a customer getting nothing.
+ * Telegram refuses a message longer than 4096 characters ("message is too
+ * long"), and an operator may type right up to that limit - the greeting and
+ * signature this bot adds then push the answer over it. Each part therefore
+ * stays well below the limit: room is left for the wrapper and for escaping.
+ */
+export const TELEGRAM_PART_LIMIT = 3800;
+
+/**
+ * Cuts text into parts of at most `limit` UTF-16 units (Telegram's own unit),
+ * preferring a paragraph break, then a line break, then a space.
+ */
+export function splitText(text: string, limit: number = TELEGRAM_PART_LIMIT): string[] {
+  const parts: string[] = [];
+  let rest = (text || '').trim();
+  while (rest.length > limit) {
+    const window = rest.slice(0, limit + 1);
+    let cut = -1;
+    for (const sep of ['\n\n', '\n', ' ']) {
+      const at = window.lastIndexOf(sep);
+      // a break in the first third would leave a uselessly short part
+      if (at > limit / 3) {
+        cut = at;
+        break;
+      }
+    }
+    if (cut < 0) {
+      cut = limit;
+      // never split a surrogate pair (an emoji) in half
+      const code = rest.charCodeAt(cut - 1);
+      if (code >= 0xd800 && code <= 0xdbff) cut--;
+    }
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts.length ? parts : [''];
+}
+
+/**
+ * Sends an operator's answer to the customer, in several messages when it is
+ * too long for one. If Telegram rejects the markup, that part goes once more
+ * unformatted and unescaped: a customer getting a stray asterisk is better
+ * than a customer getting nothing.
  */
 async function sendToCustomer(
   ticket: ISupportee,
   name: string,
   message: { text: any; from: { first_name: any } },
 ): Promise<void> {
-  try {
-    await middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, message));
-  } catch (e: any) {
-    if (!/can't parse entities/i.test(errorText(e))) throw e;
-    log.error('Markup rejected, resending as plain text: ', errorText(e));
-    await middleware.sendMessage(
-      ticket.userid,
-      ticket.messenger,
-      ticketMsg(name, message, (str) => str),
-      {},
-    );
+  const parts = splitText(String(message.text ?? ''));
+  for (let i = 0; i < parts.length; i++) {
+    const part = { ...message, text: parts[i] };
+    const pos = { first: i === 0, last: i === parts.length - 1 };
+    try {
+      try {
+        await middleware.sendMessage(ticket.userid, ticket.messenger, ticketMsg(name, part, undefined, pos));
+      } catch (e: any) {
+        if (!/can't parse entities/i.test(errorText(e))) throw e;
+        log.error('Markup rejected, resending as plain text: ', errorText(e));
+        await middleware.sendMessage(
+          ticket.userid,
+          ticket.messenger,
+          ticketMsg(name, part, (str) => str, pos),
+          {},
+        );
+      }
+    } catch (e: any) {
+      if (parts.length === 1) throw e;
+      // say how far it got: the customer may already hold the first parts
+      const err: any = new Error(`часть ${i + 1} из ${parts.length}: ${errorText(e)}`);
+      err.description = err.message;
+      throw err;
+    }
   }
 }
 
@@ -49,15 +102,18 @@ function ticketMsg(
   name: string,
   message: { text: any; from: { first_name: any } },
   esc: (str: string) => string = middleware.strictEscape,
+  pos: { first: boolean; last: boolean } = { first: true, last: true },
 ): string {
   const { config } = cache;
   if (config.clean_replies) {
     return esc(message.text);
   }
-  if (config.anonymous_replies) {
-    return `${config.language.dear} ${esc(name)},\n\n${esc(message.text)}\n\n${config.language.regards}\n${config.language.regardsGroup}`;
-  }
-  return `${config.language.dear} ${esc(name)},\n\n${esc(message.text)}\n\n${config.language.regards}\n${esc(message.from.first_name)}`;
+  const signature = config.anonymous_replies
+    ? config.language.regardsGroup
+    : esc(message.from.first_name);
+  const head = pos.first ? `${config.language.dear} ${esc(name)},\n\n` : '';
+  const tail = pos.last ? `\n\n${config.language.regards}\n${signature}` : '';
+  return `${head}${esc(message.text)}${tail}`;
 }
 
 /**
