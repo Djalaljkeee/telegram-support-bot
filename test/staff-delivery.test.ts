@@ -73,6 +73,29 @@ describe('staff.chat delivery', () => {
     expect(db.add).toHaveBeenCalledWith(46, 'closed', null, 'telegram');
   });
 
+  it('splits an answer too long for one Telegram message (ticket #61)', async () => {
+    const para = 'Шаг инструкции. '.repeat(50).trim();
+    const text = Array(6).fill(para).join('\n\n'); // ~4800 chars: one message would be "too long"
+    await chat(ctx(text));
+    const sent = toCustomer().map((c) => c[2] as string);
+    expect(sent.length).toBe(2);
+    sent.forEach((m) => expect(m.length).toBeLessThanOrEqual(4096));
+    expect(sent[0].startsWith('Здравствуйте Лиля,')).toBe(true);
+    expect(sent[0]).not.toContain('С уважением,');
+    expect(sent[1]).not.toContain('Здравствуйте');
+    expect(sent[1].endsWith('С уважением,\nOp')).toBe(true);
+    expect(db.add).toHaveBeenCalledWith(46, 'closed', null, 'telegram');
+  });
+
+  it('reports which part failed when a later part is rejected', async () => {
+    const text = Array(6).fill('Шаг инструкции. '.repeat(50).trim()).join('\n\n');
+    mockSendMessage.mockResolvedValueOnce('1').mockRejectedValueOnce(blocked);
+    await chat(ctx(text));
+    const warn = toStaff().map((c) => c[2] as string).find((m) => m.includes('НЕ доставлен'));
+    expect(warn).toContain('часть 2 из 2');
+    expect(db.add).not.toHaveBeenCalledWith(46, 'closed', null, 'telegram');
+  });
+
   it('resends raw text without parse_mode when Telegram rejects the markup', async () => {
     mockSendMessage.mockRejectedValueOnce(parseError);
     await chat(ctx());
